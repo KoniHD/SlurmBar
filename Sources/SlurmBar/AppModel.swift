@@ -46,6 +46,24 @@ final class AppModel: ObservableObject {
         return Date().timeIntervalSince(snapshot.updatedAt) <= max(30, refreshInterval) * 2
     }
 
+    func reloadDiscoveries() {
+        discoveries = HostDiscovery.discover()
+    }
+
+    func detectControlPath(for id: UUID) {
+        guard let index = hosts.firstIndex(where: { $0.id == id }) else { return }
+        let result = HostDiscovery.resolve(alias: hosts[index].alias)
+        guard let path = result.controlPath else {
+            statuses[id] = result.resolutionIssue ?? "ControlPath could not be resolved"
+            return
+        }
+        hosts[index].controlPath = path
+        snapshots[id] = nil
+        activeHosts.remove(id)
+        statuses[id] = "ControlPath resolved locally — waiting for an external SSH session"
+        nextRefresh[id] = nil
+    }
+
     func add(alias: String, path: String) {
         let alias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         let path = (path.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath

@@ -118,6 +118,7 @@ struct HostSettingsView: View {
     @State private var alias = ""
     @State private var path = ""
     @State private var partitionDrafts: [UUID: String] = [:]
+    @State private var detectionIssue: String?
     var body: some View {
         Form {
             Section("Hosts") {
@@ -129,6 +130,8 @@ struct HostSettingsView: View {
                             Button("Remove", role: .destructive) { model.remove(host.id) }
                         }
                         Text(host.controlPath).font(.caption.monospaced()).textSelection(.enabled)
+                        Button("Detect control path from SSH configuration") { model.detectControlPath(for: host.id) }
+                        if let status = model.statuses[host.id] { Text(status).font(.caption).foregroundStyle(.secondary) }
                         if let names = model.partitionNames[host.id.uuidString] {
                             Text("Visible partitions (visibility does not confirm submission eligibility)").font(.caption).foregroundStyle(.secondary)
                             TextField("All partitions, or comma-separated names", text: Binding(get: { partitionDrafts[host.id] ?? host.selectedPartitions.joined(separator: ", ") }, set: { partitionDrafts[host.id] = $0 }))
@@ -144,9 +147,20 @@ struct HostSettingsView: View {
                     Text("Choose or enter below").tag("")
                     ForEach(model.discoveries) { item in Text(item.alias).tag(item.alias) }
                 }.onChange(of: alias) { _, value in
-                    if let item = model.discoveries.first(where: { $0.alias == value }) { path = item.suggestedControlPath }
+                    let found = model.discoveries.first(where: { $0.alias == value })
+                    path = found?.controlPath ?? ""
+                    detectionIssue = found?.resolutionIssue
                 }
                 TextField("Alias", text: $alias)
+                HStack {
+                    Button("Detect control path") {
+                        let found = HostDiscovery.resolve(alias: alias)
+                        path = found.controlPath ?? ""
+                        detectionIssue = found.resolutionIssue
+                    }
+                        .disabled(!HostDiscovery.isSafeAlias(alias))
+                    Button("Reload SSH hosts") { model.reloadDiscoveries() }
+                }
                 TextField("Existing ControlPath (absolute path or ~/…)", text: $path)
                 Button("Choose socket…") {
                     let panel = NSOpenPanel()
@@ -155,7 +169,10 @@ struct HostSettingsView: View {
                     panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory() + "/.ssh")
                     if panel.runModal() == .OK, let url = panel.url { path = url.path }
                 }
-                Text("The suggested path is a convention, not a discovered socket. Enter the exact ControlPath used by your SSH client. SlurmBar never edits SSH configuration.").font(.caption).foregroundStyle(.secondary)
+                if let issue = detectionIssue {
+                    Text(issue).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("ControlPath is resolved locally from SSH configuration, including %C. A resolved path can be shown before its socket exists. Unsupported settings require a manual path. SlurmBar never edits SSH configuration or opens a connection.").font(.caption).foregroundStyle(.secondary)
                 Button("Add host") { model.add(alias: alias, path: path) }
                     .disabled(!HostDiscovery.isSafeAlias(alias) || path.isEmpty)
             }
