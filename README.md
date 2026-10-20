@@ -41,27 +41,46 @@ Discovery reads SSH configuration as data. It honors supported Host patterns, fi
 
 Connect with your normal client. If VS Code uses a different SSH binary or configuration file, ensure it creates the same control socket. SlurmBar will not initiate a test connection.
 
-## Monitoring
+## Activation and strict connection reuse
 
-Monitoring starts only when the selected ControlMaster has an active external shell, command, or forwarding channel. A persistent master alone does not activate it. The SSH client and master must support `-O channels`; unsupported implementations pause monitoring.
+The installed `/usr/bin/ssh` **and the master process** need OpenSSH's `-O channels` / info-request support. Older implementations pause monitoring rather than guessing from a socket or process name. Run `ssh -V` locally to check your client version; capability detection is authoritative.
 
-SlurmBar validates the socket and prevents SSH from falling back to a new connection. It never closes your external master or modifies your SSH configuration.
+Before each Slurm query, SlurmBar inspects channels through the local control socket. It requires an open `session` or `direct-tcpip` channel. These cover shell/command sessions and active forwarding streams used by clients such as VS Code. Control clients, listening sockets, and a persistent master alone do not activate it. Detection measures active SSH channels, not whether a particular application window is visible. A VS Code connection may remain active after its window closes if its SSH channel remains open.
+
+Every operation runs SSH with an explicit validated socket, `-F /dev/null`, `ControlMaster=no`, and `ProxyCommand=/usr/bin/false`. If the master disappears or rejects a session, fallback fails locally instead of connecting. User SSH configuration is never executed by monitoring; this avoids `Match exec`, `LocalCommand`, jump-host and authentication side effects. The alias is a label; the chosen socket determines the remote server/account. Only your own socket in a directory you own that is not writable by others is accepted.
+
+Channel checks run about every five seconds while idle. Queries are serialized and bounded to eight seconds. If the external client closes during an in-flight query, that short query may finish or reach its timeout; no further Slurm query starts without a fresh external-channel check. The app never closes the externally owned master, sends SSH keepalives, or runs a remote `watch`. There is no background remote agent.
 
 ## What the display means
 
-- **Green / idle:** available, idle CPUs.
+- **Green / idle:** Slurm reports idle CPUs on an available node without a reservation or unavailable state flag.
 - **Orange / mixed:** partially allocated.
-- **Red / allocated:** fully allocated.
-- **Gray / unavailable:** down, drained, reserved, maintenance, or otherwise unavailable.
+- **Red / allocated:** fully allocated according to Slurm.
+- **Gray / unavailable:** down, drained, reserved, maintenance, powered down, flagged, unknown, or unavailable partition.
 
-These colors describe scheduler allocation, not measured CPU/GPU utilization. CPU counts appear in node tooltips. Nodes can belong to multiple partitions; the menu bar total deduplicates host/node pairs. Idle nodes do not guarantee your job can start.
+These are scheduler allocation states, not measured CPU/GPU utilization. CPU allocation counts appear in node tooltips. Per-partition counts may overlap because a node can belong to several partitions. The menu bar total deduplicates host/node pairs. Idle nodes do not guarantee your job can start.
 
-Settings retain your selected hosts, sockets, partitions, and refresh interval across launches. All visible partitions are selected by default. Your own jobs show expected start times when Slurm provides them.
+Visible partitions are discovered with `sinfo`. Visibility does not establish account/QOS eligibility. All visible partitions are selected by default; save a comma-separated subset in Settings. Empty selection means all visible partitions. Host, socket, enabled state, refresh interval and partition preferences persist locally via UserDefaults; private connection information is never embedded in source code or uploaded. Partition names are cached locally across launches. Snapshots are kept in memory and labeled with their update age, including after disconnection.
 
-The default refresh interval is 60 seconds, configurable from 30 seconds to five minutes. The remote environment must provide `sinfo` and `squeue` on PATH. See [monitoring behavior](docs/monitoring.md) for connection checks, allocation details, job estimates, and polling limits.
+Your own jobs are queried with `squeue`. Pending jobs show Slurm's expected start when available; estimates depend on backfill configuration and may change or be unavailable. There is no generic per-partition wait prediction. If job information is restricted or unavailable, the app retains node information and displays a job-query warning.
 
-## Development
+Default refresh is 60 seconds, configurable from 30 seconds to five minutes. Each snapshot performs one `sinfo` query and one own-user `squeue` query on the selected login host, with exponential backoff after failures. Local channel inspection does not query the Slurm controller. Respect your site's monitoring policy and use a longer interval for large clusters. The remote non-interactive environment must provide `sinfo` and `squeue` on PATH. No submission, cancellation, privileged operation, or hidden-partition discovery is performed.
 
-See [development and validation](docs/development.md) for test coverage, end-to-end checks, and the CI template.
+## Development and validation
 
-[MIT licensed](LICENSE).
+```sh
+swift test
+swift build -c release
+```
+
+Tests cover channel classification, connection arguments, socket validation, malformed responses, node flags, partition overlap, and job estimates. A ready-to-enable GitHub Actions template at `docs/github-actions.yml` builds, tests and packages on macOS. Copy it to `.github/workflows/swift.yml` using credentials with workflow permission or the GitHub web editor. The initial publication credentials do not have that permission. Unit tests do not require remote access. A real ControlMaster/VS Code/Slurm end-to-end check must be performed with your own established connection; it is not implied by passing parser tests.
+
+## References
+
+- [OpenSSH multiplexing and ControlPersist](https://man.openbsd.org/ssh_config#ControlMaster)
+- [OpenSSH control commands](https://man.openbsd.org/ssh#O)
+- [Slurm sinfo and node states](https://slurm.schedmd.com/sinfo.html)
+- [Slurm expected start times](https://slurm.schedmd.com/squeue.html#OPT_start)
+- [Slurm access controls](https://slurm.schedmd.com/slurm.conf.html#OPT_PrivateData)
+
+MIT licensed.
