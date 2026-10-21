@@ -8,6 +8,7 @@ let package = Package(
     targets: [
         .target(name: "SlurmBarCore"),
         .executableTarget(name: "SlurmBar", dependencies: ["SlurmBarCore"]),
-        .testTarget(name: "SlurmBarCoreTests", dependencies: ["SlurmBarCore"])
+        .testTarget(name: "SlurmBarCoreTests", dependencies: ["SlurmBarCore"]),
+        .testTarget(name: "SlurmBarTests", dependencies: ["SlurmBar", "SlurmBarCore"])
     ]
 )

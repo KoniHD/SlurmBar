@@ -67,7 +67,7 @@ final class HostDiscoveryTests: XCTestCase {
         let sshDirectory = home.appendingPathComponent(".ssh")
         try FileManager.default.createDirectory(at: sshDirectory.appendingPathComponent("conf.d"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        try "Include conf.d/*\nHost *\nUser fallback\nControlPath ~/.ssh/%n-%r\n".write(to: sshDirectory.appendingPathComponent("config"), atomically: true, encoding: .utf8)
+        try "Include conf.d/*\nHost *\nControlMaster auto\nUser fallback\nControlPath ~/.ssh/%n-%r\n".write(to: sshDirectory.appendingPathComponent("config"), atomically: true, encoding: .utf8)
         try "Host cluster\nUser scientist\n".write(to: sshDirectory.appendingPathComponent("conf.d/01-cluster"), atomically: true, encoding: .utf8)
         let found = HostDiscovery.discover(home: home.path, systemConfigPath: nil)
         XCTAssertEqual(found.first(where: { $0.alias == "cluster" })?.controlPath, home.path + "/.ssh/cluster-scientist")
@@ -75,6 +75,49 @@ final class HostDiscoveryTests: XCTestCase {
         try "Match exec \"touch \(sentinel.path)\"\nControlPath ~/.ssh/%n\n".write(to: sshDirectory.appendingPathComponent("config"), atomically: true, encoding: .utf8)
         XCTAssertNil(HostDiscovery.resolve(alias: "cluster", home: home.path, systemConfigPath: nil).controlPath)
         XCTAssertFalse(FileManager.default.fileExists(atPath: sentinel.path))
+    }
+
+    func testDiscoveryOnlyListsEffectiveControlMasterHosts() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let ssh = home.appendingPathComponent(".ssh")
+        try FileManager.default.createDirectory(at: ssh, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try """
+        Host github.com
+            ControlMaster no
+        Host plain
+            User developer
+        Host cluster
+            ControlMaster auto
+            ControlPath ~/.ssh/%n
+        Host manual
+            ControlMaster yes
+            ControlPath ~/.ssh/%q
+        Host missing-path
+            ControlMaster autoask
+        Host ask-master
+            ControlMaster ask
+            ControlPath ~/.ssh/%n
+        Host inherited
+            User scientist
+        Host inherited-*
+            ControlMaster auto
+            ControlPath ~/.ssh/%n
+        Host inherited
+            ControlMaster auto
+            ControlPath ~/.ssh/%n
+        """.write(to: ssh.appendingPathComponent("config"), atomically: true, encoding: .utf8)
+        let found = HostDiscovery.discover(home: home.path, systemConfigPath: nil)
+        XCTAssertEqual(Set(found.map(\.alias)), ["cluster", "manual", "missing-path", "ask-master", "inherited"])
+        XCTAssertTrue(found.allSatisfy(\.controlMasterEnabled))
+        XCTAssertNil(found.first { $0.alias == "manual" }?.controlPath)
+        XCTAssertEqual(found.first { $0.alias == "inherited" }?.controlPath, home.path + "/.ssh/inherited")
+    }
+
+    func testControlMasterRespectsFirstValueAndNegatedWildcards() {
+        XCTAssertFalse(resolve("Host cluster\nControlMaster no\nHost *\nControlMaster auto").controlMasterEnabled)
+        XCTAssertFalse(resolve("Host * !cluster\nControlMaster auto").controlMasterEnabled)
+        XCTAssertTrue(resolve("Host *\nControlMaster auto\nHost cluster\nControlMaster no").controlMasterEnabled)
     }
 
     func testHashedPathsMatchInstalledOpenSSHWithoutConnecting() throws {

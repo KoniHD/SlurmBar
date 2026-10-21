@@ -1,87 +1,134 @@
 import Foundation
-import Combine
+import Observation
 import SlurmBarCore
 
 @MainActor
-final class AppModel: ObservableObject {
-    @Published var hosts: [SSHHost] = [] { didSet { save() } }
-    @Published var snapshots: [UUID: ClusterSnapshot] = [:]
-    @Published var statuses: [UUID: String] = [:]
-    @Published var activeHosts: Set<UUID> = []
-    @Published var discoveries: [DiscoveredHost] = []
-    @Published var partitionNames: [String: [String]] = [:]
-    @Published var refreshInterval: Double = 60 {
-        didSet { UserDefaults.standard.set(max(30, refreshInterval), forKey: "refreshInterval") }
+@Observable
+final class AppModel {
+    var hosts: [SSHHost] = [] {
+        didSet {
+            configurationRevision += 1
+            save()
+        }
     }
+    // Selection is deliberately session-only: every launch starts without a host.
+    var selectedAlias = "" {
+        didSet {
+            configurationRevision += 1
+            activeHosts.removeAll()
+            guard !selectedAlias.isEmpty else { return }
+            if !hosts.contains(where: { $0.alias == selectedAlias }),
+               let found = discoveries.first(where: { $0.alias == selectedAlias }), let path = found.controlPath {
+                hosts.append(SSHHost(alias: selectedAlias, controlPath: path))
+            }
+        }
+    }
+    var selectedHost: SSHHost? {
+        hosts.first { $0.alias == selectedAlias }
+    }
+    var selectedDiscovery: DiscoveredHost? {
+        discoveries.first { $0.alias == selectedAlias }
+    }
+    var snapshots: [UUID: ClusterSnapshot] = [:]
+    var statuses: [UUID: String] = [:]
+    var activeHosts: Set<UUID> = []
+    var discoveries: [DiscoveredHost] = []
+    var partitionNames: [String: [String]] = [:]
+    var refreshInterval: Double = 60 {
+        didSet { defaults.set(max(30, refreshInterval), forKey: "refreshInterval") }
+    }
+    private let defaults: UserDefaults
     private let transport = SSHTransport()
-    private lazy var collector = SlurmCollector(transport: transport)
-    private var loop: Task<Void, Never>?
-    private var nextRefresh: [UUID: Date] = [:]
-    private var failures: [UUID: Int] = [:]
+    @ObservationIgnored private lazy var collector = SlurmCollector(transport: transport)
+    @ObservationIgnored private var loop: Task<Void, Never>?
+    @ObservationIgnored private var nextRefresh: [UUID: Date] = [:]
+    @ObservationIgnored private var lastQueryAttempt: [UUID: Date] = [:]
+    @ObservationIgnored private var failures: [UUID: Int] = [:]
+    @ObservationIgnored private var configurationRevision = 0
+    @ObservationIgnored private var isRefreshing = false
 
-    init() {
-        if let data = UserDefaults.standard.data(forKey: "hosts"), let saved = try? JSONDecoder().decode([SSHHost].self, from: data) { hosts = saved }
-        let savedInterval = UserDefaults.standard.double(forKey: "refreshInterval")
+    @ObservationIgnored private var discoveryGeneration = 0
+
+    init(defaults: UserDefaults = .standard, startMonitoring: Bool = true,
+         discover: @escaping @Sendable () async -> [DiscoveredHost] = { await HostDiscovery.discoverInBackground() }) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: "hosts"), let saved = try? JSONDecoder().decode([SSHHost].self, from: data) { hosts = saved }
+        let savedInterval = defaults.double(forKey: "refreshInterval")
         refreshInterval = savedInterval >= 30 ? savedInterval : 60
-        if let data = UserDefaults.standard.data(forKey: "partitionNames"), let saved = try? JSONDecoder().decode([String: [String]].self, from: data) { partitionNames = saved }
-        discoveries = HostDiscovery.discover()
+        if let data = defaults.data(forKey: "partitionNames"), let saved = try? JSONDecoder().decode([String: [String]].self, from: data) { partitionNames = saved }
+        guard startMonitoring else { return }
         loop = Task { [weak self] in
+            await self?.reloadDiscoveries(discover: discover)
             while !Task.isCancelled {
+                guard self != nil else { return }
                 await self?.tick()
-                try? await Task.sleep(for: .seconds(5))
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { return }
             }
         }
     }
 
+    deinit { loop?.cancel() }
+
+    func stopMonitoring() async {
+        loop?.cancel()
+        await loop?.value
+        loop = nil
+    }
+
     var menuTitle: String {
-        let live = hosts.filter { $0.enabled && isSnapshotCurrent($0.id) }.compactMap { snapshots[$0.id] }
-        guard !live.isEmpty else { return "Slurm" }
-        // A node may occur in multiple partitions: count each host/node only once.
-        let idle = live.reduce(0) { $0 + $1.uniqueIdleNodeCount }
-        return "Slurm \(idle) idle"
+        guard let host = selectedHost, host.enabled, isSnapshotCurrent(host.id),
+              let snapshot = snapshots[host.id] else { return "Slurm" }
+        return "Slurm \(snapshot.uniqueIdleNodeCount) idle"
     }
 
     func isSnapshotCurrent(_ id: UUID) -> Bool {
-        guard activeHosts.contains(id), statuses[id] == "Connected", let snapshot = snapshots[id] else { return false }
+        guard selectedHost?.id == id, selectedHost?.enabled == true, activeHosts.contains(id), statuses[id] == "Connected", let snapshot = snapshots[id] else { return false }
         return Date().timeIntervalSince(snapshot.updatedAt) <= max(30, refreshInterval) * 2
     }
 
-    func reloadDiscoveries() {
-        discoveries = HostDiscovery.discover()
+    func reloadDiscoveries(discover: @Sendable () async -> [DiscoveredHost] = { await HostDiscovery.discoverInBackground() }) async {
+        discoveryGeneration += 1
+        let generation = discoveryGeneration
+        let found = await discover()
+        guard !Task.isCancelled, generation == discoveryGeneration else { return }
+        discoveries = found
+        if !selectedAlias.isEmpty && !discoveries.contains(where: { $0.alias == selectedAlias }) { selectedAlias = "" }
     }
 
-    func detectControlPath(for id: UUID) {
-        guard let index = hosts.firstIndex(where: { $0.id == id }) else { return }
-        let result = HostDiscovery.resolve(alias: hosts[index].alias)
-        guard let path = result.controlPath else {
-            statuses[id] = result.resolutionIssue ?? "ControlPath could not be resolved"
-            return
+    func refreshSelectedControlPathIfNeeded(resolve: @escaping @Sendable (String) -> DiscoveredHost = { HostDiscovery.resolve(alias: $0) }) async {
+        guard let host = selectedHost, host.enabled else { return }
+        // Socket validation and configuration reads both run off the UI thread.
+        let found = await HostDiscovery.replacementInBackground(for: host, resolve: resolve)
+        guard !Task.isCancelled, selectedHost == host, let found, let path = found.controlPath else { return }
+        if let index = discoveries.firstIndex(where: { $0.alias == host.alias }) {
+            discoveries[index] = found
         }
-        hosts[index].controlPath = path
-        snapshots[id] = nil
-        activeHosts.remove(id)
-        statuses[id] = "ControlPath resolved locally — waiting for an external SSH session"
-        nextRefresh[id] = nil
+        configure(alias: host.alias, path: path)
     }
 
-    func add(alias: String, path: String) {
+    func configure(alias: String, path: String) {
         let alias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         let path = (path.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
-        guard HostDiscovery.isSafeAlias(alias), path.hasPrefix("/"), !hosts.contains(where: { $0.alias == alias && $0.controlPath == path }) else { return }
-        hosts.append(SSHHost(alias: alias, controlPath: path))
-    }
-
-    func remove(_ id: UUID) {
-        hosts.removeAll { $0.id == id }
-        snapshots[id] = nil
-        statuses[id] = nil
-        activeHosts.remove(id)
+        guard discoveries.contains(where: { $0.alias == alias }), path.hasPrefix("/") else { return }
+        if let index = hosts.firstIndex(where: { $0.alias == alias }) {
+            let id = hosts[index].id
+            hosts[index].controlPath = path
+            snapshots[id] = nil
+            activeHosts.remove(id)
+            statuses[id] = "Waiting for an external SSH session"
+            if (failures[id] ?? 0) == 0 { nextRefresh[id] = nil }
+        } else {
+            hosts.append(SSHHost(alias: alias, controlPath: path))
+        }
     }
 
     func requestRefresh() {
         // Respect a minimum interval even for repeated clicks.
-        for host in hosts {
-            if let updated = snapshots[host.id]?.updatedAt, Date().timeIntervalSince(updated) < 30 { continue }
+        if let host = selectedHost {
+            // Manual refresh cannot bypass failure backoff.
+            guard (failures[host.id] ?? 0) == 0 else { return }
+            if let updated = snapshots[host.id]?.updatedAt, Date().timeIntervalSince(updated) < 30 { return }
             nextRefresh[host.id] = .distantPast
         }
     }
@@ -92,58 +139,90 @@ final class AppModel: ObservableObject {
         guard names != hosts[index].selectedPartitions else { return }
         hosts[index].selectedPartitions = names
         statuses[hostID] = "Partition selection changed — refresh pending"
-        nextRefresh[hostID] = snapshots[hostID]?.updatedAt.addingTimeInterval(30) ?? .distantPast
+        if (failures[hostID] ?? 0) == 0 {
+            nextRefresh[hostID] = snapshots[hostID]?.updatedAt.addingTimeInterval(30) ?? .distantPast
+        }
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(hosts) { UserDefaults.standard.set(data, forKey: "hosts") }
+        if let data = try? JSONEncoder().encode(hosts) { defaults.set(data, forKey: "hosts") }
+    }
+
+    // Shared by every refresh trigger; timestamps also allow deterministic throttling tests.
+    func beginRefresh(hostID: UUID, now: Date = Date()) -> Bool {
+        guard now >= (nextRefresh[hostID] ?? .distantPast),
+              now.timeIntervalSince(lastQueryAttempt[hostID] ?? .distantPast) >= 30 else { return false }
+        lastQueryAttempt[hostID] = now
+        return true
+    }
+
+    func finishRefresh(hostID: UUID, succeeded: Bool, now: Date = Date()) {
+        let count = succeeded ? 0 : min((failures[hostID] ?? 0) + 1, 4)
+        failures[hostID] = count
+        let multiplier = succeeded ? 1 : pow(2, Double(count - 1))
+        nextRefresh[hostID] = now.addingTimeInterval(max(30, refreshInterval) * multiplier)
     }
 
     private func tick() async {
-        for host in hosts {
+        // Recover before publishing an absent-socket status, then check the new
+        // socket's external channels in this same monitoring cycle.
+        await refreshSelectedControlPathIfNeeded()
+        guard !Task.isCancelled else { return }
+        if let host = selectedHost {
             guard host.enabled else {
-                statuses[host.id] = "Disabled"
+                statuses[host.id] = "Querying paused"
                 activeHosts.remove(host.id)
-                continue
+                return
             }
             let availability = await transport.availability(for: host)
-            guard hosts.contains(where: { $0 == host }) else { continue }
+            guard !Task.isCancelled, selectedHost == host else { return }
             switch availability {
             case .active:
                 activeHosts.insert(host.id)
             case .inactive:
                 statuses[host.id] = "Waiting for an external SSH session"
                 activeHosts.remove(host.id)
-                nextRefresh[host.id] = nil
-                continue
+                if (failures[host.id] ?? 0) == 0 { nextRefresh[host.id] = nil }
+                return
             case .unsupported:
                 statuses[host.id] = "SSH channel inspection unsupported — monitoring paused"
                 activeHosts.remove(host.id)
-                continue
+                return
             case .unavailable(let message):
                 statuses[host.id] = message
                 activeHosts.remove(host.id)
-                nextRefresh[host.id] = nil
-                continue
+                if (failures[host.id] ?? 0) == 0 { nextRefresh[host.id] = nil }
+                return
             }
-            guard Date() >= (nextRefresh[host.id] ?? .distantPast) else { continue }
-            statuses[host.id] = "Refreshing…"
-            do {
-                let snapshot = try await collector.collect(host: host)
-                guard hosts.contains(where: { $0 == host }) else { continue }
-                snapshots[host.id] = snapshot
-                partitionNames[host.id.uuidString] = snapshot.availablePartitionNames
-                if let data = try? JSONEncoder().encode(partitionNames) { UserDefaults.standard.set(data, forKey: "partitionNames") }
-                statuses[host.id] = "Connected"
-                failures[host.id] = 0
-                nextRefresh[host.id] = Date().addingTimeInterval(max(30, refreshInterval))
-            } catch {
-                statuses[host.id] = error.localizedDescription
-                activeHosts.remove(host.id)
-                let count = min((failures[host.id] ?? 0) + 1, 4)
-                failures[host.id] = count
-                nextRefresh[host.id] = Date().addingTimeInterval(max(30, refreshInterval) * pow(2, Double(count - 1)))
-            }
+            await refresh(host: host) { try await self.collector.collect(host: $0) }
+        }
+    }
+
+    // Keep scheduling independent of whether a result still belongs to the UI.
+    // The injected collector/clock also allow suspension and backoff tests without SSH.
+    func refresh(host: SSHHost, now: () -> Date = { Date() },
+                 collect: @MainActor (SSHHost) async throws -> ClusterSnapshot) async {
+        guard !Task.isCancelled, !isRefreshing, host.enabled, selectedHost == host,
+              beginRefresh(hostID: host.id, now: now()) else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        let revision = configurationRevision
+        statuses[host.id] = "Refreshing…"
+        do {
+            let snapshot = try await collect(host)
+            finishRefresh(hostID: host.id, succeeded: snapshot.jobsWarning == nil && snapshot.pendingWarning == nil, now: now())
+            guard !Task.isCancelled, configurationRevision == revision, selectedHost == host else { return }
+            snapshots[host.id] = snapshot
+            partitionNames[host.id.uuidString] = snapshot.availablePartitionNames
+            if let data = try? JSONEncoder().encode(partitionNames) { defaults.set(data, forKey: "partitionNames") }
+            statuses[host.id] = "Connected"
+        } catch {
+            // Shutdown cancellation is not a failed scheduler query.
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
+            finishRefresh(hostID: host.id, succeeded: false, now: now())
+            guard configurationRevision == revision, selectedHost == host else { return }
+            statuses[host.id] = error.localizedDescription
+            activeHosts.remove(host.id)
         }
     }
 }

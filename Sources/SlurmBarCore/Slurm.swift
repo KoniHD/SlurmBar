@@ -43,7 +43,11 @@ public struct PartitionSnapshot: Identifiable, Sendable, Equatable {
     public var id: String { name }
     public let name: String
     public let nodes: [SlurmNode]
-    public init(name: String, nodes: [SlurmNode]) { self.name = name; self.nodes = nodes }
+    /// Visible pending queue entries; array tasks remain grouped as in squeue.
+    public let pendingJobs: Int?
+    public init(name: String, nodes: [SlurmNode], pendingJobs: Int? = nil) {
+        self.name = name; self.nodes = nodes; self.pendingJobs = pendingJobs
+    }
     public var idle: Int { nodes.filter { $0.category == .idle }.count }
     public var allocated: Int { nodes.filter { $0.category == .allocated }.count }
     public var mixed: Int { nodes.filter { $0.category == .mixed }.count }
@@ -74,11 +78,13 @@ public struct ClusterSnapshot: Sendable {
     public let updatedAt: Date
     public let availablePartitionNames: [String]
     public let jobsWarning: String?
+    public let pendingWarning: String?
     public init(partitions: [PartitionSnapshot], jobs: [SlurmJob], updatedAt: Date = Date(),
-                availablePartitionNames: [String]? = nil, jobsWarning: String? = nil) {
+                availablePartitionNames: [String]? = nil, jobsWarning: String? = nil, pendingWarning: String? = nil) {
         self.partitions = partitions; self.jobs = jobs; self.updatedAt = updatedAt
         self.availablePartitionNames = availablePartitionNames ?? partitions.map(\.name)
         self.jobsWarning = jobsWarning
+        self.pendingWarning = pendingWarning
     }
 }
 
@@ -111,16 +117,19 @@ public actor SlurmCollector {
 enum SlurmParser {
     static let nodeMarker = "__SLURMBAR_NODES_V1__"
     static let jobMarker = "__SLURMBAR_JOBS_V1__"
+    static let userPrefix = "__SLURMBAR_USER_V1__:"
     static let endMarker = "__SLURMBAR_END_V1__"
     static let jobStatusPrefix = "__SLURMBAR_JOB_STATUS_V1__:"
     static let command = "/bin/sh -c '" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
     private static let script = """
     LC_ALL=C; export LC_ALL
     SLURM_TIME_FORMAT=standard; export SLURM_TIME_FORMAT
+    slurmbar_uid=$(/usr/bin/id -u) || exit $?
     printf '%s\\n' '__SLURMBAR_NODES_V1__'
     sinfo --local --hide --Node --exact --noheader --format='%R|%N|%T|%C|%i|%a' || exit $?
     printf '%s\\n' '__SLURMBAR_JOBS_V1__'
-    squeue --local --me --start --states=all --noheader --format='%i|%P|%j|%T|%R|%S'
+    printf '__SLURMBAR_USER_V1__:%s\\n' "$slurmbar_uid"
+    squeue --local --start --states=all --noheader --format='%i|%P|%j|%T|%R|%S|%U'
     printf '__SLURMBAR_JOB_STATUS_V1__:%s\\n' "$?"
     printf '%s\\n' '__SLURMBAR_END_V1__'
     """
@@ -128,11 +137,13 @@ enum SlurmParser {
     static func parse(_ output: String, selectedPartitions: [String] = [], stderr: String = "") throws -> ClusterSnapshot {
         guard output.utf8.count <= 8_388_608 else { throw SlurmError.invalidOutput("response exceeds 8 MiB") }
         let lines = output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-        guard lines.count >= 4, lines.count <= 100_004, lines.first == nodeMarker, lines.last == endMarker,
-              let jobsIndex = lines.firstIndex(of: jobMarker),
+        guard lines.count >= 5, lines.count <= 100_005, lines.first == nodeMarker, lines.last == endMarker,
+              let jobsIndex = lines.firstIndex(of: jobMarker), jobsIndex < lines.count - 3,
+              lines[jobsIndex + 1].hasPrefix(userPrefix),
+              let currentUID = UInt32(lines[jobsIndex + 1].dropFirst(userPrefix.count)),
               lines[lines.count - 2].hasPrefix(jobStatusPrefix),
               let jobStatus = Int(lines[lines.count - 2].dropFirst(jobStatusPrefix.count)),
-              (0...255).contains(jobStatus), jobsIndex < lines.count - 2,
+              (0...255).contains(jobStatus),
               lines.filter({ $0 == jobMarker }).count == 1 else {
             throw SlurmError.invalidOutput("missing framing, unexpected login output, or too many records")
         }
@@ -144,9 +155,17 @@ enum SlurmParser {
                   !fields[1].contains(where: { "[],".contains($0) }) else {
                 throw SlurmError.invalidOutput("expected one named node per partition record")
             }
-            let counts = fields[3].split(separator: "/", omittingEmptySubsequences: false).compactMap { Int($0) }
-            guard counts.count == 4, counts.allSatisfy({ (0...1_000_000_000).contains($0) }),
-                  counts[0] + counts[1] + counts[2] == counts[3] else {
+            let rawCounts = fields[3].split(separator: "/", omittingEmptySubsequences: false)
+            guard rawCounts.count == 4 else {
+                throw SlurmError.invalidOutput("invalid CPU allocation counts")
+            }
+            let counts = try rawCounts.map { field in
+                guard let count = Int(field), (0...1_000_000_000).contains(count) else {
+                    throw SlurmError.invalidOutput("invalid CPU allocation counts")
+                }
+                return count
+            }
+            guard counts[0] + counts[1] + counts[2] == counts[3] else {
                 throw SlurmError.invalidOutput("invalid CPU allocation counts")
             }
             let node = SlurmNode(name: fields[1], state: fields[2], allocatedCPUs: counts[0],
@@ -157,22 +176,37 @@ enum SlurmParser {
             partitions[partition, default: [:]][node.name] = node
         }
         let selection = Set(selectedPartitions)
-        let snapshots = partitions.keys.sorted().filter { selection.isEmpty || selection.contains($0) }.map { name in
-            PartitionSnapshot(name: name, nodes: partitions[name]!.values.sorted { $0.name < $1.name })
-        }
+        var pendingCounts: [String: Int] = [:]
         var jobs: [SlurmJob] = []
-        for line in (jobStatus == 0 ? Array(lines[(jobsIndex + 1)..<(lines.count - 2)]) : []) {
-            let fields = try fields(line, count: 6)
-            guard !fields[0].isEmpty, !fields[1].isEmpty else { throw SlurmError.invalidOutput("job identifier or partition missing") }
-            if !selection.isEmpty && Set(fields[1].split(separator: ",").map(String.init)).isDisjoint(with: selection) { continue }
+        for line in (jobStatus == 0 ? Array(lines[(jobsIndex + 2)..<(lines.count - 2)]) : []) {
+            let fields = try fields(line, count: 7)
+            let names = fields[1].split(separator: ",", omittingEmptySubsequences: false)
+            guard !fields[0].isEmpty, !names.isEmpty, names.allSatisfy({ !$0.isEmpty }),
+                  let ownerUID = UInt32(fields[6]) else {
+                throw SlurmError.invalidOutput("job identifier, partition, or owner missing or invalid")
+            }
+            let requestedPartitions = Set(names.map(String.init))
+            let isPending = fields[3].uppercased() == "PENDING"
+            if isPending {
+                for name in requestedPartitions { pendingCounts[name, default: 0] += 1 }
+            }
+            // Queue counts cover all visible owners; the personal list contains only this remote account.
+            guard ownerUID == currentUID,
+                  selection.isEmpty || !requestedPartitions.isDisjoint(with: selection) else { continue }
             let start = fields[5]
-            let expected = fields[3].uppercased() == "PENDING" &&
+            let expected = isPending &&
                 !["unknown", "n/a", "none", "(null)"].contains(start.lowercased()) ? start : ""
             jobs.append(SlurmJob(id: fields[0], partition: fields[1], name: fields[2], state: fields[3],
                                  reason: fields[4], expectedStart: expected))
         }
+        let snapshots = partitions.keys.sorted().filter { selection.isEmpty || selection.contains($0) }.map { name in
+            PartitionSnapshot(name: name, nodes: partitions[name]!.values.sorted { $0.name < $1.name },
+                              pendingJobs: jobStatus == 0 ? pendingCounts[name, default: 0] : nil)
+        }
         let warning = jobStatus == 0 ? nil : "Your jobs and start estimates are unavailable (squeue exited \(jobStatus)). \(String(stderr.prefix(2_048)))"
-        return ClusterSnapshot(partitions: snapshots, jobs: jobs, availablePartitionNames: partitions.keys.sorted(), jobsWarning: warning)
+        let pendingWarning = jobStatus == 0 ? nil : "Pending counts are unavailable (squeue exited \(jobStatus))."
+        return ClusterSnapshot(partitions: snapshots, jobs: jobs, availablePartitionNames: partitions.keys.sorted(),
+                               jobsWarning: warning, pendingWarning: pendingWarning)
     }
 
     private static func fields(_ line: String, count: Int) throws -> [String] {

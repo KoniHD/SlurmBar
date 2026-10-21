@@ -48,6 +48,11 @@ public enum SSHTransportError: Error, LocalizedError, Sendable {
 public actor SSHTransport {
     public init() {}
 
+    /// Checks the local socket and its ownership without connecting or starting SSH.
+    public static func existingControlSocketPath(_ input: String) -> String? {
+        try? validatedSocketPath(input)
+    }
+
     public func availability(for host: SSHHost) async -> SessionAvailability {
         guard host.enabled else { return .inactive }
         do {
@@ -73,7 +78,8 @@ public actor SSHTransport {
         guard await availability(for: host) == .active else { throw SSHTransportError.inactive }
         try Task.checkCancellation()
         let path = try Self.validatedSocketPath(host.controlPath)
-        return try await SSHSubprocess.run(arguments: Self.arguments(controlPath: path, command: command), timeout: 8)
+        // Large clusters can take more than eight seconds to return per-node sinfo data.
+        return try await SSHSubprocess.run(arguments: Self.arguments(controlPath: path, command: command), timeout: 30)
     }
 
     // -F /dev/null prevents Include, Match exec, LocalCommand and proxies from user config.
@@ -95,13 +101,19 @@ public actor SSHTransport {
 
     /// Matches the diagnostic format emitted by OpenSSH's channel_open_message.
     /// Ignore control clients (including this checker), listeners and closing/opening channels.
+    /// An open channel may have one stream closed (e.g. VS Code's session with no stdin).
     static func parseChannels(_ text: String) -> SessionAvailability {
         let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         guard lines.first == "The following connections are open:" else { return .unsupported }
-        let pattern = #"^\s*#[0-9]+ .+ \(t4 \[(?:session|direct-tcpip)\] r[0-9]+ (?:m|nm)[0-9]+ i0/[0-9]+ o0/[0-9]+ "#
+        // t4 is SSH_CHANNEL_OPEN; stream state 0 is open, 1/2 draining, 3 closed.
+        // SOCKS forwards retain ctype dynamic-tcpip after becoming ordinary open channels.
+        let pattern = #"^\s*#[0-9]+ .+ \(t4 \[(?:session|direct-tcpip|dynamic-tcpip)\] r[0-9]+ (?:m|nm)[0-9]+ i([0-3])/[0-9]+ o([0-3])/[0-9]+ "#
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return .unsupported }
         for line in lines.dropFirst() {
-            if expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil { return .active }
+            let range = NSRange(line.startIndex..., in: line)
+            if let match = expression.firstMatch(in: line, range: range),
+               (line as NSString).substring(with: match.range(at: 1)) == "0" ||
+               (line as NSString).substring(with: match.range(at: 2)) == "0" { return .active }
         }
         return .inactive
     }

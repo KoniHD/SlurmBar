@@ -7,25 +7,56 @@ public struct DiscoveredHost: Identifiable, Equatable, Sendable {
     public let alias: String
     public let controlPath: String?
     public let resolutionIssue: String?
+    public let controlMasterEnabled: Bool
     public var suggestedControlPath: String { controlPath ?? "" }
 
-    public init(alias: String, controlPath: String?, resolutionIssue: String? = nil) {
+    public init(alias: String, controlPath: String?, resolutionIssue: String? = nil, controlMasterEnabled: Bool = false) {
         self.alias = alias
         self.controlPath = controlPath
         self.resolutionIssue = resolutionIssue
+        self.controlMasterEnabled = controlMasterEnabled
     }
 }
 
 /// A deliberately static SSH configuration reader. Never invokes ssh, evaluates commands,
 /// resolves DNS or changes configuration. Ambiguous settings require a manual socket path.
 public enum HostDiscovery {
+    /// Filesystem reads and glob expansion must not block the main actor or a
+    /// Swift concurrency worker. Cancellation is checked before publishing results.
+    public static func discoverInBackground(home: String = NSHomeDirectory(), systemConfigPath: String? = "/etc/ssh/ssh_config") async -> [DiscoveredHost] {
+        await inBackground { discover(home: home, systemConfigPath: systemConfigPath) }
+    }
+
+    public static func resolveInBackground(alias: String) async -> DiscoveredHost {
+        await inBackground { resolve(alias: alias) }
+    }
+
+    public static func replacementInBackground(for host: SSHHost,
+                                             resolve: @escaping @Sendable (String) -> DiscoveredHost = { resolve(alias: $0) }) async -> DiscoveredHost? {
+        await inBackground {
+            guard host.enabled, SSHTransport.existingControlSocketPath(host.controlPath) == nil else { return nil }
+            let found = resolve(host.alias)
+            guard found.alias == host.alias, let path = found.controlPath, path != host.controlPath,
+                  SSHTransport.existingControlSocketPath(path) != nil else { return nil }
+            return found
+        }
+    }
+
+    private static func inBackground<Value: Sendable>(_ work: @escaping @Sendable () -> Value) async -> Value {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: work())
+            }
+        }
+    }
+
     public static func discover(home: String = NSHomeDirectory(), systemConfigPath: String? = "/etc/ssh/ssh_config") -> [DiscoveredHost] {
         let context = Context(home: home, localHostname: hostname(), localUser: NSUserName(), uid: getuid(), environment: ProcessInfo.processInfo.environment)
         var loader = Loader(context: context)
         let files = loader.roots(systemConfigPath: systemConfigPath)
         return Set(files.flatMap { $0.aliases }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map {
             resolved(alias: $0, files: files, context: context)
-        }
+        }.filter(\.controlMasterEnabled)
     }
 
     /// Resolves wildcard-only hosts too, without needing a literal Host entry.
@@ -149,9 +180,14 @@ public enum HostDiscovery {
     }
 
     private static func resolved(alias: String, files: [File], context: Context) -> DiscoveredHost {
-        func failure(_ reason: String) -> DiscoveredHost { DiscoveredHost(alias: alias, controlPath: nil, resolutionIssue: reason) }
-        guard isSafeAlias(alias) else { return failure("Enter a literal SSH Host alias.") }
         var options = [String: String](), issue: String?
+        func masterEnabled() -> Bool {
+            ["yes", "auto", "ask", "autoask"].contains(options["controlmaster"]?.lowercased() ?? "no")
+        }
+        func failure(_ reason: String) -> DiscoveredHost {
+            DiscoveredHost(alias: alias, controlPath: nil, resolutionIssue: reason, controlMasterEnabled: masterEnabled())
+        }
+        guard isSafeAlias(alias) else { return failure("Enter a literal SSH Host alias.") }
         func evaluate(_ file: File) {
             var active = true
             for entry in file.entries {
@@ -171,7 +207,7 @@ public enum HostDiscovery {
                         continue
                     }
                     guard active else { continue }
-                    if ["hostname", "user", "port", "controlpath", "canonicalizehostname", "canonicalizepermittedcnames", "proxyjump", "proxycommand"].contains(key) {
+                    if ["hostname", "user", "port", "controlmaster", "controlpath", "canonicalizehostname", "canonicalizepermittedcnames", "proxyjump", "proxycommand"].contains(key) {
                         guard let value = values.first, !value.isEmpty else { issue = "SSH configuration has a missing value."; continue }
                         if key != "proxycommand" && values.count != 1 { issue = "SSH configuration has an unsupported value."; continue }
                         // ProxyJump and ProxyCommand compete: the first one obtained wins.
@@ -216,7 +252,7 @@ public enum HostDiscovery {
             else if path.hasPrefix("~") { return failure("Other users' home paths require manual resolution.") }
             path = try expand(path, tokens: tokens, environment: context.environment)
             guard path.hasPrefix("/"), !path.contains("\0") else { return failure("A relative ControlPath depends on the SSH launch directory; enter an absolute socket path.") }
-            return DiscoveredHost(alias: alias, controlPath: path)
+            return DiscoveredHost(alias: alias, controlPath: path, controlMasterEnabled: masterEnabled())
         } catch {
             return failure(error.localizedDescription)
         }
