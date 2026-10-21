@@ -58,4 +58,8 @@ Pushing a tag such as `v0.1.0` runs tests, builds a universal Apple Silicon/Inte
 
 Open the DMG and drag SlurmBar from the left onto Applications on the right. The disk image opens in a compact window with an installation arrow. Building the DMG also requires Python 3; the script installs pinned `dmgbuild` tooling in `.build/dmg-tools` on first use (requires network access). Finder automation is not required. The app itself has no third-party dependencies. Builds are ad-hoc signed, without Developer ID signing or notarization.
 
+### First launch
+
+If macOS says Apple cannot check SlurmBar for malicious software, click **Done**, then open **System Settings → Privacy & Security → Open Anyway** and confirm **Open**. Only do this for a copy you trust. macOS saves an exception for the app. See [Apple’s instructions](https://support.apple.com/102445).
+
 [MIT licensed](LICENSE).
