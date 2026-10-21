@@ -1,10 +1,12 @@
 # SlurmBar
 
-A native SwiftUI macOS menu bar app that shows Slurm node allocation **only while an external SSH session is active**. SlurmBar reuses your existing OpenSSH ControlMaster socket. It never creates a server connection or prompts for credentials.
+[![Swift tests](https://github.com/KoniHD/SlurmBar/actions/workflows/swift.yml/badge.svg?branch=main&event=push)](https://github.com/KoniHD/SlurmBar/actions/workflows/swift.yml)
+
+A native SwiftUI macOS menu bar app that shows Slurm node allocation using SSH connections already established by other apps, such as Terminal or VS Code Remote SSH.
 
 ## Build and run
 
-Requires macOS 14+ and a Swift 6 toolchain (Xcode or Command Line Tools). No third-party packages or remote installation.
+Requires macOS 14+ and a Swift 6 toolchain (Xcode or Command Line Tools). No third-party packages.
 
 ```sh
 swift test
@@ -12,75 +14,48 @@ swift test
 open dist/SlurmBar.app
 ```
 
-The script creates a locally ad-hoc-signed app. It is not Developer ID signed or notarized. Start at login by adding the built app under System Settings → General → Login Items, if desired.
+Start at login by adding the built app under System Settings → General → Login Items.
 
-## SSH setup (you apply this yourself)
+## SSH setup
 
-SlurmBar never edits `~/.ssh/config`. You need a multiplex master created by another client, such as Terminal or VS Code Remote SSH, and the exact path of its control socket. An ordinary SSH connection without a ControlMaster cannot be reused.
-
-For example, create a private socket directory yourself:
-
-```sh
-mkdir -p ~/.ssh/slurmbar
-chmod 700 ~/.ssh/slurmbar
-```
-
-Add settings to your existing host block yourself. Replace the example alias and absolute path. Keep the socket path below 104 bytes. SSH uses the first matching value for most settings, so ensure these settings precede conflicting defaults.
+Your SSH host needs ControlMaster enabled, for example:
 
 ```sshconfig
 Host example-cluster
-    # Keep your existing HostName, User, ProxyJump and authentication settings.
     ControlMaster auto
-    ControlPath ~/.ssh/slurmbar/%n
-    ControlPersist 60
+    ControlPersist 12h
+    ControlPath ~/.ssh/master-%C
 ```
 
-In SlurmBar Settings, select an SSH alias. SlurmBar resolves its configured ControlPath locally, including `~/.ssh/master-%C`; you do not need to replace an existing ControlMaster setup with the example above. Socket paths are resolved even before a connection exists. For a manually entered alias, use **Detect control path**. For a host already saved with an incorrect path, use **Detect control path from SSH configuration** in its Settings entry. **Reload SSH hosts** rereads configuration after changes.
+Connect through your usual app, then select the SSH alias from the widget’s host dropdown. Only aliases with ControlMaster enabled appear. The selection starts empty on every launch, and only the selected host is queried. SSH configuration discovery runs in the background to keep the interface responsive. SlurmBar discovers its control socket automatically; use **Configure host** in Settings to detect or manually override the socket path if needed. Terminal, VS Code, and SlurmBar must use the same control socket.
 
-Discovery reads SSH configuration as data. It honors supported Host patterns, first-value-wins defaults, and ordered Include files, and expands control-path tokens without invoking SSH or evaluating commands. Unsupported conditional settings (such as Match exec or hostname canonicalization) show a reason and require a manual expanded socket path. A socket file picker remains available. No SSH configuration is modified.
+If the selected host’s saved socket is missing, SlurmBar re-reads its SSH configuration on the next monitoring check (every five seconds) and switches to the newly resolved socket if it exists and passes validation. An existing valid socket override is kept.
 
-Connect with your normal client. If VS Code uses a different SSH binary or configuration file, ensure it creates the same control socket. SlurmBar will not initiate a test connection.
-
-## Activation and strict connection reuse
-
-The installed `/usr/bin/ssh` **and the master process** need OpenSSH's `-O channels` / info-request support. Older implementations pause monitoring rather than guessing from a socket or process name. Run `ssh -V` locally to check your client version; capability detection is authoritative.
-
-Before each Slurm query, SlurmBar inspects channels through the local control socket. It requires an open `session` or `direct-tcpip` channel. These cover shell/command sessions and active forwarding streams used by clients such as VS Code. Control clients, listening sockets, and a persistent master alone do not activate it. Detection measures active SSH channels, not whether a particular application window is visible. A VS Code connection may remain active after its window closes if its SSH channel remains open.
-
-Every operation runs SSH with an explicit validated socket, `-F /dev/null`, `ControlMaster=no`, and `ProxyCommand=/usr/bin/false`. If the master disappears or rejects a session, fallback fails locally instead of connecting. User SSH configuration is never executed by monitoring; this avoids `Match exec`, `LocalCommand`, jump-host and authentication side effects. The alias is a label; the chosen socket determines the remote server/account. Only your own socket in a directory you own that is not writable by others is accepted.
-
-Channel checks run about every five seconds while idle. Queries are serialized and bounded to eight seconds. If the external client closes during an in-flight query, that short query may finish or reach its timeout; no further Slurm query starts without a fresh external-channel check. The app never closes the externally owned master, sends SSH keepalives, or runs a remote `watch`. There is no background remote agent.
+Monitoring requires an active external SSH channel; a persistent master alone does not activate it. Both the SSH client and master must support `-O channels`; otherwise monitoring pauses.
 
 ## What the display means
 
-- **Green / idle:** Slurm reports idle CPUs on an available node without a reservation or unavailable state flag.
+- **Green / idle:** available, idle CPUs.
 - **Orange / mixed:** partially allocated.
-- **Red / allocated:** fully allocated according to Slurm.
-- **Gray / unavailable:** down, drained, reserved, maintenance, powered down, flagged, unknown, or unavailable partition.
+- **Red / allocated:** fully allocated.
+- **Gray / unavailable:** down, drained, reserved, maintenance, or otherwise unavailable.
 
-These are scheduler allocation states, not measured CPU/GPU utilization. CPU allocation counts appear in node tooltips. Per-partition counts may overlap because a node can belong to several partitions. The menu bar total deduplicates host/node pairs. Idle nodes do not guarantee your job can start.
+These colors describe scheduler allocation, not measured CPU/GPU utilization. Each partition has a proportional bar showing the percentage of nodes in each state. Hover over it for counts and percentages. Each partition also shows its visible pending queue entries; array tasks remain grouped as in `squeue`, and jobs requesting multiple partitions count in each. Counts reflect your account’s job visibility, so cluster privacy settings may hide other users’ jobs. Failed queue queries show “Pending unavailable” rather than zero. Nodes can belong to multiple partitions; the menu bar total counts each node on the selected host once. Idle nodes do not guarantee your job can start.
 
-Visible partitions are discovered with `sinfo`. Visibility does not establish account/QOS eligibility. All visible partitions are selected by default; save a comma-separated subset in Settings. Empty selection means all visible partitions. Host, socket, enabled state, refresh interval and partition preferences persist locally via UserDefaults; private connection information is never embedded in source code or uploaded. Partition names are cached locally across launches. Snapshots are kept in memory and labeled with their update age, including after disconnection.
+Settings retain socket overrides, partition filters, and the refresh interval across launches; the selected host is never restored. The switch beside the connection status pauses or resumes querying. All visible partitions are selected by default. Your own jobs show expected start times when Slurm provides them; estimates may change or be unavailable.
 
-Your own jobs are queried with `squeue`. Pending jobs show Slurm's expected start when available; estimates depend on backfill configuration and may change or be unavailable. There is no generic per-partition wait prediction. If job information is restricted or unavailable, the app retains node information and displays a job-query warning.
+The default refresh interval is 60 seconds, configurable from 30 seconds to five minutes. Each refresh makes one `sinfo` query and one `squeue` query for all visible jobs, including owner IDs. The same queue response provides pending counts across all partitions and your personal job list, filtered by the remote account’s numeric user ID. Node allocation is refreshed each time because it can change during an SSH connection. There are no per-partition queries or extra polling loops; both commands must be on the remote PATH. Manual refresh, reconnects, and reconfiguration respect a 30-second minimum between query attempts, and manual refresh cannot bypass failure backoff. Failed queries back off automatically.
 
-Default refresh is 60 seconds, configurable from 30 seconds to five minutes. Each snapshot performs one `sinfo` query and one own-user `squeue` query on the selected login host, with exponential backoff after failures. Local channel inspection does not query the Slurm controller. Respect your site's monitoring policy and use a longer interval for large clusters. The remote non-interactive environment must provide `sinfo` and `squeue` on PATH. No submission, cancellation, privileged operation, or hidden-partition discovery is performed.
+## Tests and releases
 
-## Development and validation
+GitHub Actions runs `swift test` on pushes and pull requests. The badge above shows the latest push result on `main`. Tests run locally without a cluster; checking actual monitoring requires your own established SSH connection.
+
+Pushing a tag such as `v0.1.0` runs tests, builds a universal Apple Silicon/Intel app, and publishes a GitHub Release with `SlurmBar.dmg`. To build the same disk image locally:
 
 ```sh
-swift test
-swift build -c release
+./scripts/build-dmg.sh --arch arm64 --arch x86_64
 ```
 
-Tests cover channel classification, connection arguments, socket validation, malformed responses, node flags, partition overlap, and job estimates. A ready-to-enable GitHub Actions template at `docs/github-actions.yml` builds, tests and packages on macOS. Copy it to `.github/workflows/swift.yml` using credentials with workflow permission or the GitHub web editor. The initial publication credentials do not have that permission. Unit tests do not require remote access. A real ControlMaster/VS Code/Slurm end-to-end check must be performed with your own established connection; it is not implied by passing parser tests.
+Open the DMG and drag SlurmBar into Applications. Builds are ad-hoc signed, without Developer ID signing or notarization.
 
-## References
-
-- [OpenSSH multiplexing and ControlPersist](https://man.openbsd.org/ssh_config#ControlMaster)
-- [OpenSSH control commands](https://man.openbsd.org/ssh#O)
-- [Slurm sinfo and node states](https://slurm.schedmd.com/sinfo.html)
-- [Slurm expected start times](https://slurm.schedmd.com/squeue.html#OPT_start)
-- [Slurm access controls](https://slurm.schedmd.com/slurm.conf.html#OPT_PrivateData)
-
-MIT licensed.
+[MIT licensed](LICENSE).
