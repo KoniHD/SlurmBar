@@ -1,0 +1,45 @@
+name: Release DMG
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Validate version
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Release tags must have the form v1.2.3' >&2
+            exit 1
+          fi
+          echo "SLURMBAR_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Test
+        run: swift test
+      - name: Build universal DMG
+        run: ./scripts/build-dmg.sh --arch arm64 --arch x86_64
+      - name: Verify package
+        run: |
+          lipo dist/SlurmBar.app/Contents/MacOS/SlurmBar -verify_arch arm64
+          lipo dist/SlurmBar.app/Contents/MacOS/SlurmBar -verify_arch x86_64
+          codesign --verify --deep --strict dist/SlurmBar.app
+          hdiutil verify dist/SlurmBar.dmg
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/SlurmBar.dmg --verify-tag --generate-notes --title "SlurmBar $GITHUB_REF_NAME"
