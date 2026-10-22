@@ -71,10 +71,28 @@ final class SlurmTests: XCTestCase {
         let snapshot = try SlurmParser.parse(frame(nodes: nodes, jobs: jobs))
         XCTAssertEqual(snapshot.partitions.map(\.pendingJobs), [3, 1, 0])
         XCTAssertEqual(snapshot.jobs.map(\.id), ["100", "104"])
+        XCTAssertEqual(snapshot.runningJobCount(in: "cpu"), 0)
+        XCTAssertEqual(snapshot.runningJobCount(in: "debug"), 1)
+        XCTAssertEqual(snapshot.runningJobCount(in: "gpu"), 0)
         XCTAssertEqual(snapshot.jobs.first?.expectedStart, "2026-10-20T18:00:00")
         let filtered = try SlurmParser.parse(frame(nodes: nodes, jobs: jobs), selectedPartitions: ["cpu"])
         XCTAssertEqual(filtered.partitions.map(\.pendingJobs), [3])
         XCTAssertEqual(filtered.jobs.map(\.id), ["100"])
+        XCTAssertEqual(filtered.runningJobCount(in: "cpu"), 0)
+    }
+
+    func testRunningCountsMatchExactPartitionAndState() throws {
+        let snapshot = try SlurmParser.parse(frame(nodes: "", jobs: """
+        1|cpu,debug|mine|RUNNING|n01|N/A|1000
+        2|cpu-long|mine|RUNNING|n02|N/A|1000
+        3|cpu|mine|COMPLETING|n03|N/A|1000
+        4|cpu|mine|SUSPENDED|n04|N/A|1000
+        """))
+        XCTAssertEqual(snapshot.runningJobCount(in: "cpu"), 1)
+        XCTAssertEqual(snapshot.runningJobCount(in: "debug"), 1)
+        XCTAssertEqual(snapshot.runningJobCount(in: "cpu-long"), 1)
+        let failed = try SlurmParser.parse(frame(nodes: "", jobStatus: 1))
+        XCTAssertEqual(failed.runningJobCount(in: "cpu"), 0)
     }
 
     func testInvalidJobOwnersAndPartitionsAreRejected() {

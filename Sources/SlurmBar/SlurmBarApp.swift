@@ -17,9 +17,13 @@ private enum AppBrand {
 
 @main
 struct SlurmBarApp: App {
-    @State private var model = AppModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    private var model: AppModel { appDelegate.model }
     var body: some Scene {
-        MenuBarExtra(model.menuTitle, systemImage: "server.rack") {
+        MenuBarExtra(model.menuTitle, systemImage: "server.rack", isInserted: Binding(
+            get: { !appDelegate.quitCoordinator.isQuitting },
+            set: { _ in }
+        )) {
             DashboardView(model: model)
         }
         .menuBarExtraStyle(.window)
@@ -48,10 +52,7 @@ struct DashboardView: View {
                 Button { openWindow(id: "settings"); NSApp.activate(ignoringOtherApps: true) } label: { Image(systemName: "gearshape") }
                     .instantHelp("Settings").accessibilityLabel("Settings")
                 Button {
-                    Task {
-                        await model.stopMonitoring()
-                        NSApplication.shared.terminate(nil)
-                    }
+                    NSApplication.shared.terminate(nil)
                 } label: { Image(systemName: "power") }
                     .instantHelp("Quit").accessibilityLabel("Quit")
             }
@@ -115,7 +116,7 @@ struct HostCard: View {
                     Text("ago")
                 }.font(.caption2).foregroundStyle(.secondary)
                 ForEach(snapshot.partitions) { partition in
-                    PartitionBar(partition: partition)
+                    PartitionBar(partition: partition, runningJobCount: snapshot.runningJobCount(in: partition.name))
                 }
                 if snapshot.partitions.isEmpty { Text("No visible partitions match your selection.").font(.caption) }
                 if let warning = snapshot.jobsWarning { Text(warning).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -140,6 +141,7 @@ struct HostCard: View {
 
 struct PartitionBar: View {
     let partition: PartitionSnapshot
+    var runningJobCount: Int = 0
     private var segments: [(category: NodeCategory, count: Int, color: Color)] {
         [(.idle, partition.idle, .green), (.mixed, partition.mixed, .orange),
          (.allocated, partition.allocated, .red), (.unavailable, partition.unavailable, .gray)]
@@ -150,6 +152,7 @@ struct PartitionBar: View {
             let percentage = Double(segment.count) / Double(partition.nodes.count) * 100
             return "\(segment.category.rawValue.capitalized): \(segment.count) nodes (\(percentage.formatted(.number.precision(.fractionLength(1))))%)"
         }.joined(separator: "\n") + "\n" + pendingSummary
+            + (runningJobCount > 0 ? "\nYour running jobs: \(runningJobCount)." : "")
     }
     private var pendingSummary: String {
         let count = partition.pendingJobs.map { "\($0) pending" } ?? "Pending unavailable"
@@ -160,6 +163,10 @@ struct PartitionBar: View {
             HStack {
                 Text(partition.name).font(.subheadline.weight(.semibold))
                 Spacer()
+                if runningJobCount > 0 {
+                    Text("\(runningJobCount) running")
+                        .font(.caption).foregroundStyle(.green)
+                }
                 Text(partition.pendingJobs.map { "\($0) pending" } ?? "Pending unavailable")
                     .font(.caption).foregroundStyle(.secondary)
             }

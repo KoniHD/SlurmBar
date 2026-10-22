@@ -69,6 +69,13 @@ public struct SlurmJob: Identifiable, Sendable, Equatable {
 }
 
 public struct ClusterSnapshot: Sendable {
+    /// Personal running queue entries in this partition, using the existing owner-filtered job list.
+    public func runningJobCount(in partition: String) -> Int {
+        jobs.filter {
+            $0.state.uppercased() == "RUNNING" && $0.partition.split(separator: ",").contains(Substring(partition))
+        }.count
+    }
+
     /// Availability is partition-dependent; a node idle in any selected partition counts once.
     public var uniqueIdleNodeCount: Int {
         Set(partitions.flatMap(\.nodes).filter { $0.category == .idle }.map(\.name)).count
