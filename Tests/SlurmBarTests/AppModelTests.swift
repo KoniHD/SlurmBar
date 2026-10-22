@@ -297,6 +297,73 @@ struct AppModelTests {
         }
     }
 
+    @Test(arguments: [SessionAvailability.inactive, .unsupported, .unavailable("Socket absent")],
+          [3599.0, 3600, 3601])
+    func disconnectedSnapshotExpiresOnlyAfterOneHour(availability: SessionAvailability, age: Double) async throws {
+        try await withModel { model, defaults in
+            let host = SSHHost(alias: "cluster", controlPath: "/missing", selectedPartitions: ["gpu"])
+            model.hosts = [host]
+            model.selectedAlias = host.alias
+            let now = Date()
+            model.snapshots[host.id] = ClusterSnapshot(partitions: [], jobs: [], updatedAt: now.addingTimeInterval(-age))
+            model.partitionNames[host.id.uuidString] = ["gpu"]
+            defaults.set(try JSONEncoder().encode(model.partitionNames), forKey: "partitionNames")
+            model.activeHosts = [host.id]
+            #expect(model.beginRefresh(hostID: host.id, now: now))
+            model.finishRefresh(hostID: host.id, succeeded: false, now: now)
+            await model.tick(now: { now }, availability: { _ in availability })
+            if age > 3600 {
+                #expect(model.selectedAlias.isEmpty)
+                #expect(model.selectedHost == nil)
+                #expect(model.snapshots.isEmpty)
+                #expect(model.statuses.isEmpty)
+                #expect(model.activeHosts.isEmpty)
+                #expect(model.partitionNames.isEmpty)
+                #expect(defaults.data(forKey: "partitionNames") == nil)
+                #expect(model.hosts == [host])
+                model.selectedAlias = host.alias
+                model.requestRefresh()
+                #expect(!model.beginRefresh(hostID: host.id, now: now.addingTimeInterval(59)))
+                #expect(model.beginRefresh(hostID: host.id, now: now.addingTimeInterval(60)))
+            } else {
+                #expect(model.selectedHost == host)
+                #expect(model.snapshots[host.id] != nil)
+                #expect(model.partitionNames[host.id.uuidString] == ["gpu"])
+            }
+        }
+    }
+
+    @Test func activeSessionKeepsOldSnapshotAndSelection() async throws {
+        try await withModel { model, _ in
+            let host = SSHHost(alias: "cluster", controlPath: "/missing")
+            model.hosts = [host]
+            model.selectedAlias = host.alias
+            let now = Date()
+            model.snapshots[host.id] = ClusterSnapshot(partitions: [], jobs: [], updatedAt: now.addingTimeInterval(-7200))
+            // Keep the next scheduler query pending while checking the restored session.
+            model.finishRefresh(hostID: host.id, succeeded: true, now: now)
+            await model.tick(now: { now }, availability: { _ in .active })
+            #expect(model.selectedHost == host)
+            #expect(model.activeHosts.contains(host.id))
+            #expect(model.snapshots[host.id] != nil)
+        }
+    }
+
+    @Test func socketReconfigurationPreservesSnapshotExpiry() async throws {
+        try await withModel { model, _ in
+            let host = SSHHost(alias: "cluster", controlPath: "/missing")
+            model.hosts = [host]
+            model.discoveries = [DiscoveredHost(alias: host.alias, controlPath: host.controlPath)]
+            model.selectedAlias = host.alias
+            let now = Date()
+            model.snapshots[host.id] = ClusterSnapshot(partitions: [], jobs: [], updatedAt: now.addingTimeInterval(-3601))
+            model.configure(alias: host.alias, path: "/missing/replacement")
+            #expect(model.snapshots[host.id] == nil)
+            await model.tick(now: { now }, availability: { _ in .inactive })
+            #expect(model.selectedAlias.isEmpty)
+        }
+    }
+
     @Test func selectionAutomaticallyConfiguresOnlyChosenHost() async throws {
         try await withModel { model, _ in
             model.hosts = []

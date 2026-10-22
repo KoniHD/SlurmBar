@@ -33,6 +33,8 @@ If the selected host’s saved socket is missing, SlurmBar re-reads its SSH conf
 
 Monitoring requires an active external SSH channel; a persistent master alone does not activate it. Both the SSH client and master must support `-O channels`; otherwise monitoring pauses.
 
+After disconnection, the last snapshot remains visible with its age. If it is more than one hour old and no usable external session is detected, SlurmBar clears the host selection and returns to the initial screen. Cached snapshots, statuses, and partition names are discarded; saved socket overrides, partition filters, refresh settings, and query backoff are retained. Select a host again to resume monitoring.
+
 ## What the display means
 
 - **Green / idle:** available, idle CPUs.
