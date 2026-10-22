@@ -19,6 +19,13 @@ private enum AppBrand {
 struct SlurmBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private var model: AppModel { appDelegate.model }
+
+    init() {
+        // AppKit's undocumented delay hint is in milliseconds. Register it for
+        // this process only; macOS still controls native tooltip presentation.
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 500])
+    }
+
     var body: some Scene {
         MenuBarExtra(model.menuTitle, systemImage: "server.rack", isInserted: Binding(
             get: { !appDelegate.quitCoordinator.isQuitting },
@@ -47,14 +54,14 @@ struct DashboardView: View {
                 }.font(.headline)
                 Spacer()
                 Button { model.requestRefresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .instantHelp("Refresh when due (minimum 30 seconds)").accessibilityLabel("Refresh")
+                    .help("Refresh when due (minimum 30 seconds)").accessibilityLabel("Refresh")
                     .disabled(model.selectedHost == nil)
                 Button { openWindow(id: "settings"); NSApp.activate(ignoringOtherApps: true) } label: { Image(systemName: "gearshape") }
-                    .instantHelp("Settings").accessibilityLabel("Settings")
+                    .help("Settings").accessibilityLabel("Settings")
                 Button {
                     NSApplication.shared.terminate(nil)
                 } label: { Image(systemName: "power") }
-                    .instantHelp("Quit").accessibilityLabel("Quit")
+                    .help("Quit").accessibilityLabel("Quit")
             }
             Picker("Host", selection: $model.selectedAlias) {
                 Text("Select a host…").tag("")
@@ -107,7 +114,7 @@ struct HostCard: View {
                     if let i = model.hosts.firstIndex(where: { $0.id == host.id }) { model.hosts[i].enabled = value }
                 }))
                 .labelsHidden().toggleStyle(.switch).controlSize(.mini)
-                .instantHelp(host.enabled ? "Stop querying" : "Resume querying")
+                .help(host.enabled ? "Stop querying" : "Resume querying")
             }
             if let snapshot = model.snapshots[host.id] {
                 HStack(spacing: 3) {

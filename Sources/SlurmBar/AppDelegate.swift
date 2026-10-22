@@ -2,8 +2,23 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let model = AppModel()
+    let model: AppModel
     let quitCoordinator = QuitCoordinator()
+
+    override convenience init() {
+        self.init(model: AppModel())
+    }
+
+    init(model: AppModel) {
+        self.model = model
+        super.init()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Picker menus and the dashboard are transient windows. Closing one
+        // must leave this menu bar app running until the user explicitly quits.
+        false
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         quitCoordinator.quit(hideUI: {

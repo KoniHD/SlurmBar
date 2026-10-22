@@ -33,6 +33,8 @@ If the selected host’s saved socket is missing, SlurmBar re-reads its SSH conf
 
 Monitoring requires an active external SSH channel; a persistent master alone does not activate it. Both the SSH client and master must support `-O channels`; otherwise monitoring pauses.
 
+Selecting a host while disconnected keeps SlurmBar running and shows the connection status. Closing the host picker, dashboard, or Settings window leaves the app in the menu bar; use **Quit** to exit.
+
 After disconnection, the last snapshot remains visible with its age. If it is more than one hour old and no usable external session is detected, SlurmBar clears the host selection and returns to the initial screen. Cached snapshots, statuses, and partition names are discarded; saved socket overrides, partition filters, refresh settings, and query backoff are retained. Select a host again to resume monitoring.
 
 ## What the display means
@@ -47,6 +49,8 @@ These colors describe scheduler allocation, not measured CPU/GPU utilization. Ea
 Settings retain socket overrides, partition filters, and the refresh interval across launches; the selected host is never restored. The switch beside the connection status pauses or resumes querying. All visible partitions are selected by default. Your own jobs show expected start times when Slurm provides them; estimates may change or be unavailable.
 
 The default refresh interval is 60 seconds, configurable from 30 seconds to five minutes. Each refresh makes one `sinfo` query and one `squeue` query for all visible jobs, including owner IDs. The same queue response provides pending counts across all partitions and your personal job list, filtered by the remote account’s numeric user ID. Node allocation is refreshed each time because it can change during an SSH connection. There are no per-partition queries or extra polling loops; both commands must be on the remote PATH. Manual refresh, reconnects, and reconfiguration respect a 30-second minimum between query attempts, and manual refresh cannot bypass failure backoff. Failed queries back off automatically, including when settings change while a query is running; results from the old configuration are discarded. Malformed allocation responses are rejected instead of displaying partial counts.
+
+The header buttons and query switch use native macOS tooltips. SlurmBar requests a half-second delay using the undocumented `NSInitialToolTipDelay` preference within the app only; macOS may ignore this hint.
 
 Quit immediately hides the menu bar icon and all app windows, then cancels monitoring in the background. It uses macOS’s standard deferred-termination mechanism, allowing up to two seconds for cleanup and exiting sooner when cleanup finishes. Repeated quit requests do not restart cleanup. Your external SSH connection and Slurm jobs are left untouched.
 
