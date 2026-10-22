@@ -46,6 +46,8 @@ final class AppModel {
     @ObservationIgnored private var failures: [UUID: Int] = [:]
     @ObservationIgnored private var configurationRevision = 0
     @ObservationIgnored private var isRefreshing = false
+    // Socket recovery invalidates the displayed data, but must not restart its expiry clock.
+    @ObservationIgnored private var lastSnapshotAt: [UUID: Date] = [:]
 
     @ObservationIgnored private var discoveryGeneration = 0
 
@@ -114,6 +116,7 @@ final class AppModel {
         if let index = hosts.firstIndex(where: { $0.alias == alias }) {
             let id = hosts[index].id
             hosts[index].controlPath = path
+            if let snapshot = snapshots[id] { lastSnapshotAt[id] = snapshot.updatedAt }
             snapshots[id] = nil
             activeHosts.remove(id)
             statuses[id] = "Waiting for an external SSH session"
@@ -163,7 +166,21 @@ final class AppModel {
         nextRefresh[hostID] = now.addingTimeInterval(max(30, refreshInterval) * multiplier)
     }
 
-    private func tick() async {
+    func expireDisconnectedSnapshot(now: Date = Date()) {
+        guard let host = selectedHost, !activeHosts.contains(host.id),
+              let updated = snapshots[host.id]?.updatedAt ?? lastSnapshotAt[host.id],
+              now.timeIntervalSince(updated) > 3600 else { return }
+        selectedAlias = ""
+        snapshots.removeAll()
+        statuses.removeAll()
+        partitionNames.removeAll()
+        lastSnapshotAt.removeAll()
+        defaults.removeObject(forKey: "partitionNames")
+        // Retain attempt timestamps and backoff so selecting the host again cannot bypass them.
+    }
+
+    func tick(now: () -> Date = { Date() },
+              availability: ((SSHHost) async -> SessionAvailability)? = nil) async {
         // Recover before publishing an absent-socket status, then check the new
         // socket's external channels in this same monitoring cycle.
         await refreshSelectedControlPathIfNeeded()
@@ -174,7 +191,11 @@ final class AppModel {
                 activeHosts.remove(host.id)
                 return
             }
-            let availability = await transport.availability(for: host)
+            let availability = if let availability {
+                await availability(host)
+            } else {
+                await transport.availability(for: host)
+            }
             guard !Task.isCancelled, selectedHost == host else { return }
             switch availability {
             case .active:
@@ -183,15 +204,18 @@ final class AppModel {
                 statuses[host.id] = "Waiting for an external SSH session"
                 activeHosts.remove(host.id)
                 if (failures[host.id] ?? 0) == 0 { nextRefresh[host.id] = nil }
+                expireDisconnectedSnapshot(now: now())
                 return
             case .unsupported:
                 statuses[host.id] = "SSH channel inspection unsupported — monitoring paused"
                 activeHosts.remove(host.id)
+                expireDisconnectedSnapshot(now: now())
                 return
             case .unavailable(let message):
                 statuses[host.id] = message
                 activeHosts.remove(host.id)
                 if (failures[host.id] ?? 0) == 0 { nextRefresh[host.id] = nil }
+                expireDisconnectedSnapshot(now: now())
                 return
             }
             await refresh(host: host) { try await self.collector.collect(host: $0) }
@@ -213,6 +237,7 @@ final class AppModel {
             finishRefresh(hostID: host.id, succeeded: snapshot.jobsWarning == nil && snapshot.pendingWarning == nil, now: now())
             guard !Task.isCancelled, configurationRevision == revision, selectedHost == host else { return }
             snapshots[host.id] = snapshot
+            lastSnapshotAt[host.id] = snapshot.updatedAt
             partitionNames[host.id.uuidString] = snapshot.availablePartitionNames
             if let data = try? JSONEncoder().encode(partitionNames) { defaults.set(data, forKey: "partitionNames") }
             statuses[host.id] = "Connected"

@@ -254,7 +254,7 @@ struct HostSettingsView: View {
                     Text("2 minutes").tag(120.0)
                     Text("5 minutes").tag(300.0)
                 }
-                Text("Monitoring requires an external active session and SSH channel inspection support. Closing your external sessions pauses polling. Cached snapshots remain labeled with their age.").font(.caption).foregroundStyle(.secondary)
+                Text("Monitoring requires an external active session and SSH channel inspection support. Closing your external sessions pauses polling. Snapshots over one hour old are cleared and the host selection resets if no usable session is detected.").font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).padding().frame(minWidth: 540, minHeight: 460)
             .onAppear { alias = model.selectedAlias; loadConfiguration() }
