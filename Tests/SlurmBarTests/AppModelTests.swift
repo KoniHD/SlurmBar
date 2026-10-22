@@ -381,6 +381,24 @@ struct AppModelTests {
         }
     }
 
+    @Test(arguments: [false, true])
+    func selectingDisconnectedHostKeepsSelectionAndReportsMissingSocket(saved: Bool) async throws {
+        try await withModel { model, _ in
+            let host = SSHHost(alias: "slurmbar-disconnected-test", controlPath: "/tmp/sb-\(UUID().uuidString)/master")
+            model.discoveries = [DiscoveredHost(alias: host.alias, controlPath: host.controlPath, controlMasterEnabled: true)]
+            if saved { model.hosts = [host] }
+            model.selectedAlias = host.alias
+            let selected = try #require(model.selectedHost)
+            // Exercise real socket validation with an absent path, without an SSH process.
+            await model.tick()
+            #expect(model.selectedHost == selected)
+            #expect(model.statuses[selected.id] == "Control socket is absent; connect using another application first.")
+            #expect(model.activeHosts.isEmpty)
+            #expect(model.snapshots.isEmpty)
+            #expect(model.menuTitle == "Slurm")
+        }
+    }
+
     @Test func manualSocketOverrideUpdatesHostWithoutDuplicatesOrLosingFilters() async throws {
         try await withModel { model, _ in
             let host = SSHHost(alias: "cluster", controlPath: "/tmp/old", selectedPartitions: ["gpu"])
