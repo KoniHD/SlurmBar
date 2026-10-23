@@ -104,11 +104,28 @@ struct DashboardView: View {
 struct HostCard: View {
     let host: SSHHost
     let model: AppModel
+    private var showsInlineSnapshotAge: Bool {
+        model.activeHosts.contains(host.id) && model.statuses[host.id] == "Connected"
+            && model.snapshots[host.id] != nil
+    }
+
+    private func snapshotAge(_ snapshot: ClusterSnapshot) -> some View {
+        HStack(spacing: 3) {
+            Text(model.isSnapshotCurrent(host.id) ? "Updated" : "Last snapshot · stale")
+            Text(snapshot.updatedAt, style: .relative)
+            Text("ago")
+        }.foregroundStyle(.secondary)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Circle().fill(model.activeHosts.contains(host.id) ? .green : .gray).frame(width: 7, height: 7)
-                Text(model.statuses[host.id] ?? "Waiting for SSH").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                if showsInlineSnapshotAge, let snapshot = model.snapshots[host.id] {
+                    snapshotAge(snapshot).font(.caption)
+                } else {
+                    Text(model.statuses[host.id] ?? "Waiting for SSH").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
                 Spacer(minLength: 4)
                 Toggle("Query host", isOn: Binding(get: { model.selectedHost?.enabled ?? false }, set: { value in
                     if let i = model.hosts.firstIndex(where: { $0.id == host.id }) { model.hosts[i].enabled = value }
@@ -117,11 +134,9 @@ struct HostCard: View {
                 .help(host.enabled ? "Stop querying" : "Resume querying")
             }
             if let snapshot = model.snapshots[host.id] {
-                HStack(spacing: 3) {
-                    Text(model.isSnapshotCurrent(host.id) ? "Updated" : "Last snapshot · stale")
-                    Text(snapshot.updatedAt, style: .relative)
-                    Text("ago")
-                }.font(.caption2).foregroundStyle(.secondary)
+                if !showsInlineSnapshotAge {
+                    snapshotAge(snapshot).font(.caption2)
+                }
                 ForEach(snapshot.partitions) { partition in
                     PartitionBar(partition: partition, runningJobCount: snapshot.runningJobCount(in: partition.name))
                 }
