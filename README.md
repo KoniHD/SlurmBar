@@ -35,6 +35,8 @@ Monitoring requires an active external SSH channel; a persistent master alone do
 
 Selecting a host while disconnected keeps SlurmBar running and shows the connection status. Closing the host picker, dashboard, or Settings window leaves the app in the menu bar; use **Quit** to exit.
 
+Once connected and the first snapshot arrives, the update age appears directly beside the green connection dot. Before the first snapshot, the status text remains visible.
+
 After disconnection, the last snapshot remains visible with its age. If it is more than one hour old and no usable external session is detected, SlurmBar clears the host selection and returns to the initial screen. Cached snapshots, statuses, and partition names are discarded; saved socket overrides, partition filters, refresh settings, and query backoff are retained. Select a host again to resume monitoring.
 
 ## What the display means
