@@ -84,6 +84,13 @@ final class AppModel {
         return "Slurm \(snapshot.uniqueIdleNodeCount) idle"
     }
 
+    var menuRunningJobCount: Int {
+        guard let host = selectedHost, isSnapshotCurrent(host.id),
+              let snapshot = snapshots[host.id], snapshot.jobsWarning == nil else { return 0 }
+        // Count the personal queue directly so multi-partition jobs appear once.
+        return snapshot.jobs.filter { $0.state.uppercased() == "RUNNING" }.count
+    }
+
     func isSnapshotCurrent(_ id: UUID) -> Bool {
         guard selectedHost?.id == id, selectedHost?.enabled == true, activeHosts.contains(id), statuses[id] == "Connected", let snapshot = snapshots[id] else { return false }
         return Date().timeIntervalSince(snapshot.updatedAt) <= max(30, refreshInterval) * 2

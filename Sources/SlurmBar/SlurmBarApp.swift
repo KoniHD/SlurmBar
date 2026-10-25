@@ -27,11 +27,13 @@ struct SlurmBarApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra(model.menuTitle, systemImage: "server.rack", isInserted: Binding(
+        MenuBarExtra(isInserted: Binding(
             get: { !appDelegate.quitCoordinator.isQuitting },
             set: { _ in }
         )) {
             DashboardView(model: model)
+        } label: {
+            MenuBarLabel(title: model.menuTitle, runningJobCount: model.menuRunningJobCount)
         }
         .menuBarExtraStyle(.window)
         Window("SlurmBar Settings", id: "settings") {

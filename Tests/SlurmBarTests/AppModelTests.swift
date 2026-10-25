@@ -532,6 +532,61 @@ struct AppModelTests {
         }
     }
 
+    @Test func menuJobCountUsesPersonalRunningEntriesOnSelectedHost() async throws {
+        try await withModel { model, _ in
+            let alpha = SSHHost(alias: "alpha", controlPath: "/tmp/alpha")
+            let beta = SSHHost(alias: "beta", controlPath: "/tmp/beta")
+            model.hosts = [alpha, beta]
+            model.selectedAlias = alpha.alias
+            model.activeHosts = [alpha.id, beta.id]
+            model.statuses = [alpha.id: "Connected", beta.id: "Connected"]
+            let running = SlurmJob(id: "1", partition: "cpu,debug", name: "running", state: "RUNNING",
+                                   reason: "node", expectedStart: "")
+            let pending = SlurmJob(id: "2", partition: "cpu", name: "pending", state: "PENDING",
+                                   reason: "Priority", expectedStart: "")
+            let completed = SlurmJob(id: "3", partition: "cpu", name: "completed", state: "COMPLETED",
+                                     reason: "node", expectedStart: "")
+            model.snapshots[alpha.id] = ClusterSnapshot(partitions: [], jobs: [running, pending, completed])
+            model.snapshots[beta.id] = ClusterSnapshot(partitions: [], jobs: [running, running])
+            #expect(model.menuRunningJobCount == 1)
+            model.selectedAlias = beta.alias
+            // Selection requires a new session check before using the cached snapshot.
+            #expect(model.menuRunningJobCount == 0)
+            model.activeHosts.insert(beta.id)
+            #expect(model.menuRunningJobCount == 2)
+            model.snapshots[beta.id] = ClusterSnapshot(partitions: [], jobs: [pending, completed])
+            #expect(model.menuRunningJobCount == 0)
+        }
+    }
+
+    @Test(arguments: ["paused", "disconnected", "stale", "queueUnavailable", "noSelection", "refreshing"])
+    func menuJobCountHidesWhenMonitoringCannotConfirmRunningJobs(_ condition: String) async throws {
+        try await withModel { model, _ in
+            let host = SSHHost(alias: "cluster", controlPath: "/tmp/socket")
+            let jobs = [SlurmJob(id: "1", partition: "cpu", name: "running", state: "RUNNING",
+                                 reason: "node", expectedStart: "")]
+            model.hosts = [host]
+            model.selectedAlias = host.alias
+            model.activeHosts.insert(host.id)
+            model.statuses[host.id] = "Connected"
+            model.snapshots[host.id] = ClusterSnapshot(partitions: [], jobs: jobs)
+            #expect(model.menuRunningJobCount == 1)
+            switch condition {
+            case "paused": model.hosts[0].enabled = false
+            case "disconnected": model.activeHosts.remove(host.id)
+            case "stale":
+                model.snapshots[host.id] = ClusterSnapshot(partitions: [], jobs: jobs,
+                                                         updatedAt: Date().addingTimeInterval(-601))
+            case "queueUnavailable":
+                model.snapshots[host.id] = ClusterSnapshot(partitions: [], jobs: jobs,
+                                                         jobsWarning: "Queue unavailable")
+            case "noSelection": model.selectedAlias = ""
+            default: model.statuses[host.id] = "Refreshing…"
+            }
+            #expect(model.menuRunningJobCount == 0)
+        }
+    }
+
     @Test func menuAndFreshnessUseOnlySelectedHost() async throws {
         try await withModel { model, _ in
             let alpha = SSHHost(alias: "alpha", controlPath: "/tmp/alpha")
