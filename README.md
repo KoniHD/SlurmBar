@@ -31,7 +31,7 @@ Connect through your usual app, then select the SSH alias from the widget’s ho
 
 If the selected host’s saved socket is missing, SlurmBar re-reads its SSH configuration on the next monitoring check (every five seconds) and switches to the newly resolved socket if it exists and passes validation. An existing valid socket override is kept.
 
-Monitoring requires an active external SSH channel; a persistent master alone does not activate it. Both the SSH client and master must support `-O channels`; otherwise monitoring pauses.
+Monitoring requires an active external SSH channel, such as an open shell, command session, or established SOCKS forward. A persistent master alone does not activate it. Both the SSH client and master must support `-O channels`; otherwise monitoring pauses.
 
 Selecting a host while disconnected keeps SlurmBar running and shows the connection status. Closing the host picker, dashboard, or Settings window leaves the app in the menu bar; use **Quit** to exit.
 
