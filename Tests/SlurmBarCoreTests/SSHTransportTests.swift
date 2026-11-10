@@ -16,6 +16,7 @@ final class SSHTransportTests: XCTestCase {
             "  #0 mux-control-client (t16 [mux-control-client] nr0 nm0 i0/0 o0/0 e[closed]/0)",
             "  #1 session (t3 [session] r0 nm0 i0/0 o0/0 e[closed]/0)",
             "  #1 session (t4 [session] r0 nm0 i3/0 o3/0 e[closed]/0)",
+            "  #1 client-session (t4 [session:shell] r0 nm0 i3/0 o3/0 e[closed]/0)",
             "  #1 session (t4 [session] r0 nm0 i1/0 o2/0 e[closed]/0)",
             "  #1 session (t5 [session] r0 nm0 i0/0 o0/0 e[closed]/0)",
             "  #1 dynamic-tcpip (t13 [dynamic-tcpip] r0 nm0 i0/0 o0/0 e[closed]/0)",
@@ -32,6 +33,14 @@ final class SSHTransportTests: XCTestCase {
             "  #3 client-session (t4 [session] r0 nm0 i3/0 o0/0 e[write]/0 fd -1/10/11 sock -1 cc 2 nc0 io 0x00/0x00 B)",
             "  #4 direct-tcpip: listening port 59531 for 127.0.0.1 port 46759, connect from 127.0.0.1 port 59571 to 127.0.0.1 port 59531 (t4 [dynamic-tcpip] r1 nm0 i0/0 o0/0 e[closed]/0 fd 9/9/-1 sock 9 cc -1 nc0 io 0x01/0x00 I)",
             "  #1 client-session (t4 [session] r0 nm0 i0/0 o3/0 e[closed]/0)"
+        ] { XCTAssertEqual(SSHTransport.parseChannels(header + line + "\r\n"), .active, line) }
+    }
+
+    func testJupiterShellAndCommandSubtypesAreActiveIndependently() {
+        let header = "The following connections are open:\r\n"
+        for line in [
+            "  #3 client-session (t4 [session:command] r0 nm0 i3/0 o0/0 e[write]/0 fd -1/10/11 sock -1 cc 2 nc0 io 0x00/0x00 B)",
+            "  #7 client-session (t4 [session:shell] r3 nm0 i0/0 o0/0 e[write]/0 fd 14/15/16 sock -1 cc 6 nc0 io 0x01/0x00 RTI)"
         ] { XCTAssertEqual(SSHTransport.parseChannels(header + line + "\r\n"), .active, line) }
     }
 

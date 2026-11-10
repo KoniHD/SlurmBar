@@ -106,8 +106,9 @@ public actor SSHTransport {
         let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         guard lines.first == "The following connections are open:" else { return .unsupported }
         // t4 is SSH_CHANNEL_OPEN; stream state 0 is open, 1/2 draining, 3 closed.
+        // Newer OpenSSH masters label shell and command sessions separately.
         // SOCKS forwards retain ctype dynamic-tcpip after becoming ordinary open channels.
-        let pattern = #"^\s*#[0-9]+ .+ \(t4 \[(?:session|direct-tcpip|dynamic-tcpip)\] r[0-9]+ (?:m|nm)[0-9]+ i([0-3])/[0-9]+ o([0-3])/[0-9]+ "#
+        let pattern = #"^\s*#[0-9]+ .+ \(t4 \[(?:session(?::(?:shell|command))?|direct-tcpip|dynamic-tcpip)\] r[0-9]+ (?:m|nm)[0-9]+ i([0-3])/[0-9]+ o([0-3])/[0-9]+ "#
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return .unsupported }
         for line in lines.dropFirst() {
             let range = NSRange(line.startIndex..., in: line)
