@@ -29,6 +29,8 @@ final class AppModel {
     var selectedDiscovery: DiscoveredHost? {
         discoveries.first { $0.alias == selectedAlias }
     }
+    // A refresh in flight keeps the last snapshot valid; only failures or lost sessions invalidate it.
+    private static let refreshingStatus = "Refreshing…"
     var snapshots: [UUID: ClusterSnapshot] = [:]
     var statuses: [UUID: String] = [:]
     var activeHosts: Set<UUID> = []
@@ -92,7 +94,8 @@ final class AppModel {
     }
 
     func isSnapshotCurrent(_ id: UUID) -> Bool {
-        guard selectedHost?.id == id, selectedHost?.enabled == true, activeHosts.contains(id), statuses[id] == "Connected", let snapshot = snapshots[id] else { return false }
+        guard selectedHost?.id == id, selectedHost?.enabled == true, activeHosts.contains(id),
+              statuses[id] == "Connected" || statuses[id] == Self.refreshingStatus, let snapshot = snapshots[id] else { return false }
         return Date().timeIntervalSince(snapshot.updatedAt) <= max(30, refreshInterval) * 2
     }
 
@@ -238,7 +241,7 @@ final class AppModel {
         isRefreshing = true
         defer { isRefreshing = false }
         let revision = configurationRevision
-        statuses[host.id] = "Refreshing…"
+        statuses[host.id] = Self.refreshingStatus
         do {
             let snapshot = try await collect(host)
             finishRefresh(hostID: host.id, succeeded: snapshot.jobsWarning == nil && snapshot.pendingWarning == nil, now: now())
