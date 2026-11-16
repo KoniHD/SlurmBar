@@ -31,13 +31,13 @@ struct SlurmBarApp: App {
             get: { !appDelegate.quitCoordinator.isQuitting },
             set: { _ in }
         )) {
-            DashboardView(model: model)
+            DashboardView(model: model, updater: appDelegate.updater)
         } label: {
             MenuBarLabel(title: model.menuTitle, runningJobCount: model.menuRunningJobCount)
         }
         .menuBarExtraStyle(.window)
         Window("SlurmBar Settings", id: "settings") {
-            HostSettingsView(model: model)
+            HostSettingsView(model: model, updater: appDelegate.updater)
         }
         .defaultSize(width: 600, height: 500)
     }
@@ -45,6 +45,7 @@ struct SlurmBarApp: App {
 
 struct DashboardView: View {
     @Bindable var model: AppModel
+    let updater: UpdateController
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -64,6 +65,9 @@ struct DashboardView: View {
                     NSApplication.shared.terminate(nil)
                 } label: { Image(systemName: "power") }
                     .help("Quit").accessibilityLabel("Quit")
+            }
+            if let release = updater.availableRelease {
+                UpdateBanner(release: release, updater: updater)
             }
             Picker("Host", selection: $model.selectedAlias) {
                 Text("Select a host…").tag("")
@@ -100,6 +104,35 @@ struct DashboardView: View {
             // An explicit ideal height keeps MenuBarExtra's scroll area from collapsing.
             }.frame(minHeight: 240, idealHeight: 420, maxHeight: 560)
         }.padding(18).frame(width: 420)
+    }
+}
+
+struct UpdateBanner: View {
+    let release: UpdateRelease
+    let updater: UpdateController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(.blue)
+                Text("SlurmBar \(release.version.description) is available").font(.callout.weight(.semibold))
+                Spacer(minLength: 4)
+                if updater.isInstalling {
+                    ProgressView().controlSize(.small)
+                } else if updater.canInstall {
+                    Button("Install & Restart") { Task { await updater.installAvailableUpdate() } }
+                        .disabled(updater.isBusy)
+                } else {
+                    Link("Download", destination: release.notesURL)
+                }
+            }
+            if let message = updater.message {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+            Link("Release notes", destination: release.notesURL).font(.caption)
+        }
+        .padding(10)
+        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -225,6 +258,7 @@ struct PartitionBar: View {
 
 struct HostSettingsView: View {
     @Bindable var model: AppModel
+    @Bindable var updater: UpdateController
     @State private var alias = ""
     @State private var path = ""
     @State private var partitionDraft = ""
@@ -277,6 +311,21 @@ struct HostSettingsView: View {
                     Button("Save partitions") { model.updatePartitions(partitionDraft, hostID: host.id) }
                     Text("Discovered: " + names.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            Section("Updates") {
+                Toggle("Check for updates automatically", isOn: $updater.automaticChecks)
+                HStack {
+                    Button("Check now") { Task { await updater.checkNow() } }.disabled(updater.isBusy)
+                    if updater.isChecking { ProgressView().controlSize(.small) }
+                    if let release = updater.availableRelease, updater.canInstall {
+                        Button("Install \(release.version.description) & Restart") {
+                            Task { await updater.installAvailableUpdate() }
+                        }.disabled(updater.isBusy)
+                    }
+                }
+                if let message = updater.message { Text(message).font(.caption).foregroundStyle(.secondary) }
+                Text("Version \(updater.currentVersion?.description ?? "unknown"). Update checks contact GitHub only, and installs are verified against a signing key built into the app.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Refresh") {
                 Picker("Interval", selection: $model.refreshInterval) {

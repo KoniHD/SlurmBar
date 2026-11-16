@@ -4,13 +4,15 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel
     let quitCoordinator = QuitCoordinator()
+    let updater: UpdateController
 
     override convenience init() {
-        self.init(model: AppModel())
+        self.init(model: AppModel(), updater: UpdateController())
     }
 
-    init(model: AppModel) {
+    init(model: AppModel, updater: UpdateController) {
         self.model = model
+        self.updater = updater
         super.init()
     }
 

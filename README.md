@@ -58,11 +58,19 @@ The header buttons and query switch use native macOS tooltips. SlurmBar requests
 
 Quit immediately hides the menu bar icon and all app windows, then cancels monitoring in the background. It uses macOS’s standard deferred-termination mechanism, allowing up to two seconds for cleanup and exiting sooner when cleanup finishes. Repeated quit requests do not restart cleanup. Your external SSH connection and Slurm jobs are left untouched.
 
+## Updates
+
+SlurmBar checks GitHub Releases for a newer version about once a day (and on **Check now** in Settings). When one exists, the dashboard shows a banner with **Install & Restart**. The app downloads the release disk image itself, so macOS does not quarantine it and shows no new security prompt; only the first manual install needs the approval described below.
+
+Updates are verified before anything is replaced: the disk image must carry a valid Ed25519 signature (`SlurmBar.dmg.sig`) made with a release key whose public half is built into the app, and the app inside must have the expected bundle identifier, the release’s version, and a valid code signature. Downloads are only accepted from this repository’s release assets over HTTPS. The new app is staged beside the installed one, swapped by a short helper after SlurmBar quits, and the old copy is restored if the swap fails. Installing in place needs SlurmBar to be an `.app` in a folder you can write to (such as `/Applications`); otherwise the banner links to the release page. Turn off the daily check in **Settings → Updates**. This is the only network access besides your own SSH connection, and it never touches the SSH sockets. Versions before 0.2.0 have no updater and must be replaced manually once.
+
+Release maintainers: generate a key pair with `swift scripts/update-signing.swift generate`, store the private key as the repository secret `SLURMBAR_UPDATE_KEY`, and set `UpdateConfiguration.publicKey` to the public key. The release workflow signs the disk image and fails if the secret is missing. Losing or rotating the key means users must reinstall manually once.
+
 ## Tests and releases
 
 GitHub Actions runs `swift test` on pushes and pull requests. The badge above shows the latest push result on `main`. Tests run locally without a cluster; checking actual monitoring requires your own established SSH connection.
 
-Pushing a tag such as `v0.1.0` runs tests, builds a universal Apple Silicon/Intel app, and publishes a GitHub Release with `SlurmBar.dmg`. To build the same disk image locally:
+Pushing a tag such as `v0.1.0` runs tests, builds a universal Apple Silicon/Intel app, and publishes a GitHub Release with `SlurmBar.dmg` and its signature `SlurmBar.dmg.sig`. To build the same disk image locally:
 
 ```sh
 ./scripts/build-dmg.sh --arch arm64 --arch x86_64

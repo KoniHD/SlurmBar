@@ -9,7 +9,8 @@ struct AppDelegateTests {
         let suite = "SlurmBarTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let delegate = AppDelegate(model: AppModel(defaults: defaults, startMonitoring: false))
+        let delegate = AppDelegate(model: AppModel(defaults: defaults, startMonitoring: false),
+                                    updater: UpdateController(defaults: defaults, startChecking: false))
         #expect(!delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared))
         #expect(!delegate.quitCoordinator.isQuitting)
     }

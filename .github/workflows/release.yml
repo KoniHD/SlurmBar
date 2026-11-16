@@ -39,7 +39,18 @@ jobs:
           lipo dist/SlurmBar.app/Contents/MacOS/SlurmBar -verify_arch x86_64
           codesign --verify --deep --strict dist/SlurmBar.app
           hdiutil verify dist/SlurmBar.dmg
+      - name: Sign disk image for in-app updates
+        env:
+          SLURMBAR_UPDATE_KEY: ${{ secrets.SLURMBAR_UPDATE_KEY }}
+        run: |
+          if [[ -z "$SLURMBAR_UPDATE_KEY" ]]; then
+            echo 'Repository secret SLURMBAR_UPDATE_KEY is missing; the in-app updater needs a signed disk image.' >&2
+            exit 1
+          fi
+          swift scripts/update-signing.swift sign dist/SlurmBar.dmg
+          PUBLIC_KEY="$(grep -o 'publicKey = "[^"]*"' Sources/SlurmBarCore/Updater.swift | cut -d'"' -f2)"
+          swift scripts/update-signing.swift verify dist/SlurmBar.dmg "$PUBLIC_KEY"
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/SlurmBar.dmg --verify-tag --generate-notes --title "SlurmBar $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/SlurmBar.dmg dist/SlurmBar.dmg.sig --verify-tag --generate-notes --title "SlurmBar $GITHUB_REF_NAME"

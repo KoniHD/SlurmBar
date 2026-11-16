@@ -10,6 +10,7 @@ SlurmBar is a native SwiftUI macOS menu bar app for viewing Slurm allocation ove
 - `Sources/SlurmBar/`: SwiftUI/AppKit UI, hover help, and the `@MainActor` application model that manages settings and polling.
 - `Tests/SlurmBarCoreTests/`: XCTest coverage for discovery, transport, and parsing.
 - `Tests/SlurmBarTests/`: Swift Testing coverage for application state and hover help.
+- `Sources/SlurmBarCore/Updater.swift` and `Sources/SlurmBar/UpdateController.swift`: GitHub release check, Ed25519 verification, in-place install.
 - `Resources/`: bundle metadata and app icons; `scripts/`: app, DMG, and icon generation; `.github/workflows/`: tests and tagged releases.
 
 ## Working conventions
@@ -29,6 +30,12 @@ SlurmBar is a native SwiftUI macOS menu bar app for viewing Slurm allocation ove
 - Serialize refreshes. Preserve the 30-second minimum between query attempts and failure backoff, including manual refresh, reconnects, and reconfiguration.
 - Keep remote queries fixed and read-only, without interpolating user input. Each refresh uses one `sinfo` and one `squeue` query; avoid per-partition polling.
 - Display scheduler allocation rather than measured utilization. Deduplicate nodes across partitions for the menu bar total. Preserve the distinction between unavailable pending counts and zero, and filter personal jobs by the remote numeric user ID.
+
+## Updater
+
+- The updater is separate from SSH monitoring and contacts only `api.github.com` and this repository's release assets over HTTPS. Never route it through SSH sockets, and keep SSH monitoring free of any update logic.
+- Never install without verifying the DMG's Ed25519 signature against `UpdateConfiguration.publicKey`, plus bundle identifier, version, and `codesign --verify`. Keep downloads size-bounded and subprocesses fixed, shell-free, and time-limited. Do not rotate the key casually: older installs would stop updating.
+- Tests must stay offline: inject `UpdateFetch`, and use temporary disk images and directories.
 
 ## Validation and packaging
 
