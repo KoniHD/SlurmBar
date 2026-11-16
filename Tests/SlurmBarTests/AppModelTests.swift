@@ -581,9 +581,23 @@ struct AppModelTests {
                 model.snapshots[host.id] = ClusterSnapshot(partitions: [], jobs: jobs,
                                                          jobsWarning: "Queue unavailable")
             case "noSelection": model.selectedAlias = ""
-            default: model.statuses[host.id] = "Refreshing…"
+            default: model.statuses[host.id] = "Waiting for an external SSH session"
             }
             #expect(model.menuRunningJobCount == 0)
+        }
+    }
+
+    @Test func menuJobCountSurvivesRefreshInFlight() async throws {
+        try await withModel { model, _ in
+            let host = SSHHost(alias: "cluster", controlPath: "/tmp/socket")
+            let jobs = [SlurmJob(id: "1", partition: "cpu", name: "running", state: "RUNNING",
+                                 reason: "node", expectedStart: "")]
+            model.hosts = [host]
+            model.selectedAlias = host.alias
+            model.activeHosts.insert(host.id)
+            model.statuses[host.id] = "Refreshing…"
+            model.snapshots[host.id] = ClusterSnapshot(partitions: [], jobs: jobs)
+            #expect(model.menuRunningJobCount == 1)
         }
     }
 
