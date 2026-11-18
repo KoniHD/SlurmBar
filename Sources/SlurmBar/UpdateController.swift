@@ -48,7 +48,7 @@ final class UpdateController {
          stage: (@Sendable (UpdateRelease, URL) async throws -> StagedUpdate)? = nil,
          relaunch: @escaping @MainActor (StagedUpdate) throws -> Void = { staged in
              try UpdateInstaller.launchSwap(staged, waitingFor: ProcessInfo.processInfo.processIdentifier)
-             NSApplication.shared.terminate(nil)
+             UpdateController.performFromRunLoop { NSApplication.shared.terminate(nil) }
          }) {
         self.defaults = defaults
         self.currentVersion = currentVersion
@@ -64,6 +64,18 @@ final class UpdateController {
     }
 
     deinit { loop?.cancel() }
+
+    /// Runs `work` from a main run loop callout instead of the current main-actor job.
+    ///
+    /// Main-actor jobs execute inside a main dispatch queue callout. `terminate(_:)` answered with
+    /// `.terminateLater` spins a nested run loop that cannot drain the main queue from there, so the
+    /// quit coordinator's main-actor tasks would never reply and the app would hang hidden while the
+    /// swap helper gave up. A run loop block leaves the main queue free to run those tasks.
+    static func performFromRunLoop(_ work: @escaping @MainActor () -> Void) {
+        RunLoop.main.perform(inModes: [.default]) {
+            MainActor.assumeIsolated { work() }
+        }
+    }
 
     private func startLoop() {
         guard loop == nil, currentVersion != nil else { return }
