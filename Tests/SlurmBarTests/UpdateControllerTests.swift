@@ -116,6 +116,24 @@ struct UpdateControllerTests {
         await updater.checkNow()
         #expect(updater.availableRelease == nil)
     }
+
+    /// Regression: `terminate(_:)` with `.terminateLater` spins a nested run loop until main-actor
+    /// tasks reply. Started directly from a main-actor job, those tasks never ran and the update hung.
+    /// The test process has no AppKit modal mode, so the nested loop runs in the default mode.
+    @Test func runLoopWorkCanWaitForMainActorTasks() async {
+        let replied = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            UpdateController.performFromRunLoop {
+                var didReply = false
+                Task { @MainActor in didReply = true }
+                let deadline = Date().addingTimeInterval(3)
+                while !didReply, Date() < deadline {
+                    _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+                }
+                continuation.resume(returning: didReply)
+            }
+        }
+        #expect(replied)
+    }
 }
 
 private final class Log: @unchecked Sendable {
