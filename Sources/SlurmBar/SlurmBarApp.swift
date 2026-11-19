@@ -268,6 +268,9 @@ struct HostSettingsView: View {
     @State private var detectionRequest: UUID?
     @State private var reloadRequest = UUID()
     @FocusState private var pathFocused: Bool
+    /// Folders scanned for sockets; a folder picked in the panel is added to `~/.ssh`.
+    @State private var socketFolders = ControlSocketScanner.defaultDirectories
+    @State private var socketCandidates: [String] = []
     private var configuredHost: SSHHost? { model.hosts.first { $0.alias == alias } }
     var body: some View {
         Form {
@@ -280,6 +283,7 @@ struct HostSettingsView: View {
                     savePath(alias: previous)
                     detectionRequest = nil
                     loadConfiguration()
+                    rescanSockets()
                 }
                 TextField("Existing ControlPath (socket)", text: $path, prompt: Text("Absolute path or ~/…"))
                     .focused($pathFocused)
@@ -291,19 +295,25 @@ struct HostSettingsView: View {
                     Button("Detect control path") {
                         detectionRequest = UUID()
                     }.disabled(alias.isEmpty || detectionRequest != nil)
-                    Button("Choose socket…") {
-                        let panel = NSOpenPanel()
-                        panel.canChooseDirectories = false
-                        panel.showsHiddenFiles = true
-                        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory() + "/.ssh")
-                        if panel.runModal() == .OK, let url = panel.url { path = url.path; savePath() }
-                    }.disabled(alias.isEmpty)
+                    Menu("Choose socket") {
+                        // NSOpenPanel never lists sockets, so the menu offers the sockets found by scanning.
+                        if socketCandidates.isEmpty {
+                            Text("No sockets found in \(socketFolders.map(displayPath).joined(separator: ", "))")
+                        }
+                        ForEach(socketCandidates, id: \.self) { candidate in
+                            // A dot marks the socket currently in the path field; others are indented to match.
+                            Button((isCurrentSocket(candidate) ? "•  " : "    ") + displayPath(candidate)) { choose(candidate) }
+                        }
+                        Divider()
+                        Button("Search another folder…") { chooseSocketFolder() }
+                        Button("Rescan") { rescanSockets() }
+                    }.fixedSize().disabled(alias.isEmpty)
                     if saved { Text("Saved").font(.caption).foregroundStyle(.secondary) }
                 }
                 if let issue = detectionIssue {
                     Text(issue).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Hosts with ControlMaster enabled in SSH configuration appear automatically. A socket path you detect, choose, or enter is saved as soon as it changes.")
+                Text("Hosts with ControlMaster enabled in SSH configuration appear automatically. Choose socket lists sockets you own in ~/.ssh and any folder you search. A socket path you detect, choose, or enter is saved as soon as it changes.")
                     .font(.caption).foregroundStyle(.secondary)
                 Link("SSH configuration guide", destination: configurationURL)
             }
@@ -342,7 +352,7 @@ struct HostSettingsView: View {
                 Text("Monitoring requires an external active session and SSH channel inspection support. Closing your external sessions pauses polling. Snapshots over one hour old are cleared and the host selection resets if no usable session is detected.").font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).padding().frame(minWidth: 540, minHeight: 460)
-            .onAppear { alias = model.selectedAlias; loadConfiguration() }
+            .onAppear { alias = model.selectedAlias; loadConfiguration(); rescanSockets() }
             .task(id: reloadRequest) { await model.reloadDiscoveries() }
             .task(id: detectionRequest) {
                 guard detectionRequest != nil else { return }
@@ -358,6 +368,45 @@ struct HostSettingsView: View {
                 savePath()
             }
             .onDisappear { savePath() }
+    }
+    private func choose(_ socket: String) {
+        path = socket
+        detectionIssue = nil
+        savePath()
+    }
+    private func rescanSockets() {
+        socketCandidates = ControlSocketScanner.sockets(in: socketFolders)
+    }
+    /// The open panel picks a folder; sockets inside it (which the panel cannot show) are listed in the menu.
+    private func chooseSocketFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.showsHiddenFiles = true
+        panel.prompt = "Search Folder"
+        panel.message = "Choose the folder that contains the ControlPath socket."
+        panel.directoryURL = socketFolders.last
+        guard panel.runModal() == .OK, let folder = panel.url?.standardizedFileURL else { return }
+        if !socketFolders.contains(folder) { socketFolders.append(folder) }
+        rescanSockets()
+        let inFolder = ControlSocketScanner.sockets(in: [folder])
+        if inFolder.count == 1 {
+            choose(inFolder[0])
+        } else {
+            detectionIssue = inFolder.isEmpty
+                ? "No sockets owned by you were found in \(displayPath(folder.path))."
+                : "Found \(inFolder.count) sockets in \(displayPath(folder.path)); pick one from Choose socket."
+        }
+    }
+    private func displayPath(_ url: URL) -> String { displayPath(url.path) }
+    private func displayPath(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
+    private func isCurrentSocket(_ candidate: String) -> Bool {
+        let current = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !current.isEmpty else { return false }
+        func canonical(_ value: String) -> String {
+            URL(fileURLWithPath: (value as NSString).expandingTildeInPath).resolvingSymlinksInPath().path
+        }
+        return canonical(current) == canonical(candidate)
     }
     private func loadConfiguration() {
         let found = model.discoveries.first { $0.alias == alias }
