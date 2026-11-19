@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel
     let quitCoordinator = QuitCoordinator()
     let updater: UpdateController
+    let settingsWindow = SettingsWindowController()
 
     override convenience init() {
         self.init(model: AppModel(), updater: UpdateController())
