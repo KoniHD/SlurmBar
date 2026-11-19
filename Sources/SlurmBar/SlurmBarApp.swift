@@ -31,13 +31,14 @@ struct SlurmBarApp: App {
             get: { !appDelegate.quitCoordinator.isQuitting },
             set: { _ in }
         )) {
-            DashboardView(model: model, updater: appDelegate.updater)
+            DashboardView(model: model, updater: appDelegate.updater, settingsWindow: appDelegate.settingsWindow)
         } label: {
             MenuBarLabel(title: model.menuTitle, runningJobCount: model.menuRunningJobCount)
         }
         .menuBarExtraStyle(.window)
         Window("SlurmBar Settings", id: "settings") {
             HostSettingsView(model: model, updater: appDelegate.updater)
+                .background(SettingsWindowAccessor(controller: appDelegate.settingsWindow))
         }
         .defaultSize(width: 600, height: 500)
     }
@@ -46,6 +47,7 @@ struct SlurmBarApp: App {
 struct DashboardView: View {
     @Bindable var model: AppModel
     let updater: UpdateController
+    let settingsWindow: SettingsWindowController
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -59,7 +61,7 @@ struct DashboardView: View {
                 Button { model.requestRefresh() } label: { Image(systemName: "arrow.clockwise") }
                     .help("Refresh when due (minimum 30 seconds)").accessibilityLabel("Refresh")
                     .disabled(model.selectedHost == nil)
-                Button { openWindow(id: "settings"); NSApp.activate(ignoringOtherApps: true) } label: { Image(systemName: "gearshape") }
+                Button { settingsWindow.open(openWindow) } label: { Image(systemName: "gearshape") }
                     .help("Settings").accessibilityLabel("Settings")
                 Button {
                     NSApplication.shared.terminate(nil)
@@ -93,10 +95,7 @@ struct DashboardView: View {
                             Text("Configure \(model.selectedAlias)").font(.headline)
                             Text(model.selectedDiscovery?.resolutionIssue ?? "Set the existing ControlMaster socket path in Settings.")
                                 .font(.callout).foregroundStyle(.secondary)
-                            Button("Configure host…") {
-                                openWindow(id: "settings")
-                                NSApp.activate(ignoringOtherApps: true)
-                            }
+                            Button("Configure host…") { settingsWindow.open(openWindow) }
                             Link("Help with configuration", destination: configurationURL).font(.callout)
                         }
                     }
@@ -264,8 +263,11 @@ struct HostSettingsView: View {
     @State private var partitionDraft = ""
     @State private var detectionIssue: String?
     @State private var saved = false
+    /// The socket path last loaded or saved for `alias`; only a different path is saved.
+    @State private var savedPath = ""
     @State private var detectionRequest: UUID?
     @State private var reloadRequest = UUID()
+    @FocusState private var pathFocused: Bool
     private var configuredHost: SSHHost? { model.hosts.first { $0.alias == alias } }
     var body: some View {
         Form {
@@ -273,43 +275,46 @@ struct HostSettingsView: View {
                 Picker("SSH alias", selection: $alias) {
                     Text("Select a host…").tag("")
                     ForEach(model.discoveries) { item in Text(item.alias).tag(item.alias) }
-                }.onChange(of: alias) { _, _ in
+                }.onChange(of: alias) { previous, _ in
+                    // A path typed for the previous host is kept, not discarded.
+                    savePath(alias: previous)
                     detectionRequest = nil
                     loadConfiguration()
                 }
+                TextField("Existing ControlPath (socket)", text: $path, prompt: Text("Absolute path or ~/…"))
+                    .focused($pathFocused)
+                    .onSubmit { savePath() }
+                    .onChange(of: pathFocused) { _, focused in if !focused { savePath() } }
+                    .onChange(of: path) { _, _ in saved = false }
                 HStack {
+                    Button("Reload SSH hosts") { reloadRequest = UUID() }
                     Button("Detect control path") {
                         detectionRequest = UUID()
                     }.disabled(alias.isEmpty || detectionRequest != nil)
-                    Button("Reload SSH hosts") { reloadRequest = UUID() }
+                    Button("Choose socket…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = false
+                        panel.showsHiddenFiles = true
+                        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory() + "/.ssh")
+                        if panel.runModal() == .OK, let url = panel.url { path = url.path; savePath() }
+                    }.disabled(alias.isEmpty)
+                    if saved { Text("Saved").font(.caption).foregroundStyle(.secondary) }
                 }
-                TextField("Existing ControlPath (absolute path or ~/…)", text: $path)
-                    .onChange(of: path) { _, _ in saved = false }
-                Button("Choose socket…") {
-                    let panel = NSOpenPanel()
-                    panel.canChooseDirectories = false
-                    panel.showsHiddenFiles = true
-                    panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory() + "/.ssh")
-                    if panel.runModal() == .OK, let url = panel.url { path = url.path }
-                }.disabled(alias.isEmpty)
                 if let issue = detectionIssue {
                     Text(issue).font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Hosts with ControlMaster enabled in SSH configuration appear automatically. Override the socket path here if automatic detection needs help.")
+                Text("Hosts with ControlMaster enabled in SSH configuration appear automatically. A socket path you detect, choose, or enter is saved as soon as it changes.")
                     .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Save configuration") { model.configure(alias: alias, path: path); saved = true }
-                        .disabled(alias.isEmpty || !(path.hasPrefix("/") || path.hasPrefix("~/")))
-                    if saved { Text("Saved").font(.caption).foregroundStyle(.secondary) }
-                }
                 Link("SSH configuration guide", destination: configurationURL)
             }
             if let host = configuredHost, let names = model.partitionNames[host.id.uuidString] {
                 Section("Partitions for \(alias)") {
-                    TextField("All partitions, or comma-separated names", text: $partitionDraft)
+                    TextField("Partitions", text: $partitionDraft, prompt: Text("All partitions"))
                         .onSubmit { model.updatePartitions(partitionDraft, hostID: host.id) }
                     Button("Save partitions") { model.updatePartitions(partitionDraft, hostID: host.id) }
-                    Text("Discovered: " + names.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
+                    Text("Enter one partition, or several separated by commas (for example: \(names.count >= 2 ? names.prefix(2).joined(separator: ", ") : "gpu, cpu")). Leave empty to show all partitions.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Available: " + names.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("Updates") {
@@ -350,14 +355,26 @@ struct HostSettingsView: View {
                 guard path == originalPath else { return }
                 path = found.controlPath ?? ""
                 detectionIssue = found.resolutionIssue
-                saved = false
+                savePath()
             }
+            .onDisappear { savePath() }
     }
     private func loadConfiguration() {
         let found = model.discoveries.first { $0.alias == alias }
         path = configuredHost?.controlPath ?? found?.controlPath ?? ""
         detectionIssue = configuredHost == nil ? found?.resolutionIssue : nil
         partitionDraft = configuredHost?.selectedPartitions.joined(separator: ", ") ?? ""
+        savedPath = path
         saved = false
+    }
+    /// Saving clears the host's snapshot, so it happens on commit and only for a changed, valid path.
+    private func savePath(alias target: String? = nil) {
+        let target = target ?? alias
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty, trimmed != savedPath.trimmingCharacters(in: .whitespacesAndNewlines),
+              trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") else { return }
+        model.configure(alias: target, path: trimmed)
+        savedPath = path
+        if target == alias { saved = true }
     }
 }
