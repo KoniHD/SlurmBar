@@ -301,7 +301,8 @@ struct HostSettingsView: View {
                             Text("No sockets found in \(socketFolders.map(displayPath).joined(separator: ", "))")
                         }
                         ForEach(socketCandidates, id: \.self) { candidate in
-                            Button(displayPath(candidate)) { choose(candidate) }
+                            // A dot marks the socket currently in the path field; others are indented to match.
+                            Button((isCurrentSocket(candidate) ? "•  " : "    ") + displayPath(candidate)) { choose(candidate) }
                         }
                         Divider()
                         Button("Search another folder…") { chooseSocketFolder() }
@@ -399,6 +400,14 @@ struct HostSettingsView: View {
     }
     private func displayPath(_ url: URL) -> String { displayPath(url.path) }
     private func displayPath(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
+    private func isCurrentSocket(_ candidate: String) -> Bool {
+        let current = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !current.isEmpty else { return false }
+        func canonical(_ value: String) -> String {
+            URL(fileURLWithPath: (value as NSString).expandingTildeInPath).resolvingSymlinksInPath().path
+        }
+        return canonical(current) == canonical(candidate)
+    }
     private func loadConfiguration() {
         let found = model.discoveries.first { $0.alias == alias }
         path = configuredHost?.controlPath ?? found?.controlPath ?? ""
